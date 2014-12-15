@@ -1,0 +1,17 @@
+Source: netgen
+Section: electronics
+Priority: optional
+Maintainer: Thorsten Baumheinrich <thor@gmx.com>
+Build-Depends: debhelper (>= 9.0.0), autotools-dev, m4, tcl-dev, tk-dev
+Standards-Version: 3.9.4
+Homepage: http://opencircuitdesign.com/netgen/welcome.html
+#Vcs-Git: git://git.debian.org/collab-maint/netgen.git
+#Vcs-Browser: http://git.debian.org/?p=collab-maint/netgen.git;a=summary
+
+Package: netgen
+Architecture: amd64
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Netgen is a tool for comparing netlists, a process known as LVS, which stands for Layout vs. Schematic
+
+###Netgen version 1.5.6 is a Development Version at this point 2014/12/15
+###I found this to be more reliable than 1.4.77
