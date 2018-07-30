@@ -1,0 +1,12 @@
+tcltk/netgen
+tcltk/netgenexec
+defs.mak
+config.cache
+config.status
+Depend
+*.log
+*.o
+*.so
+*~
+UPDATE_ME
+VERSION
