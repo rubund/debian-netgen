@@ -31,6 +31,10 @@ the Free Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. */
 #include <stdlib.h>
 #endif
 
+#ifdef TCL_NETGEN
+#include <tcl.h>
+#endif
+
 #include "netgen.h"
 #include "hash.h"
 #include "objlist.h"
@@ -348,7 +352,6 @@ void PRINTPACKED(unsigned long *mstar)
 #ifdef IBMPC
 static unsigned int lochash(unsigned long *mstar)
 #else
-INLINE 
 static unsigned long lochash(unsigned long *mstar)
 #endif
 {
@@ -432,7 +435,6 @@ static struct ex_entry *hashinstall(unsigned long *mstar)
   return(ex_tab[hashval] = np);
 }
 
-/* INLINE */
 int Exists(int E1, int E2)
 {
   int i;
@@ -470,7 +472,6 @@ int InitializeExistTest(void)
   return(1);
 }
 
-/* INLINE */
 void AddToExistSet(int E1, int E2) 
 {
   int i;
@@ -580,7 +581,7 @@ struct embed *FlattenEmbeddingTree(struct embed *E)
     struct objlist *ob;
 
     ob = InstanceNumber(E->cell,E->instancenumber);
-    tp = LookupCell(ob->model);
+    tp = LookupCell(ob->model.class);
 
     if (tp->embedding != NULL) {
       tmp = FlattenEmbeddingTree((struct embed *)(tp->embedding));
@@ -639,8 +640,8 @@ int LenEmbed(char *prefix, struct nlist *np, struct embed *E, int flatten)
     struct nlist *np2;
 
     ob = InstanceNumber(np,E->instancenumber);
-    instancename = ob->instance;
-    model = ob->model;
+    instancename = ob->instance.name;
+    model = ob->model.class;
     np2 = LookupCell(model);
     if (np2 == NULL) return(0);
     sprintf(longstr, "%s%s", prefix, instancename);
@@ -670,8 +671,8 @@ void PrintEmb(FILE *outfile, char *prefix, struct nlist *np,
     char name[200];
 
     ob = InstanceNumber(np,E->instancenumber);
-    instancename = ob->instance;
-    np2 = LookupCell(ob->model);
+    instancename = ob->instance.name;
+    np2 = LookupCell(ob->model.class);
     if (np2 == NULL) return;
      sprintf(name,"%s%s", prefix, instancename);
     if ((np2->class != CLASS_SUBCKT) || np2->embedding == NULL || !flatten) 
@@ -708,8 +709,8 @@ void PrintEmbed(FILE *outfile, char *prefix, struct nlist *np,
     char name[200];
 
     ob = InstanceNumber(np,E->instancenumber);
-    instancename = ob->instance;
-    np2 = LookupCell(ob->model);
+    instancename = ob->instance.name;
+    np2 = LookupCell(ob->model.class);
     if (np2 == NULL) return;
 
     if (np2->embedding != NULL && flatten) {

@@ -31,6 +31,7 @@ the Free Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. */
 #include "dbug.h"
 #include "print.h"
 #include "query.h"	/* for ElementNodes() */
+#include "hash.h"
 
 #ifndef TRUE
 #define TRUE 1
@@ -47,7 +48,6 @@ the Free Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. */
 #define CONST84
 #endif
 
-int UseTkConsole = TRUE;
 Tcl_Interp *netgeninterp;
 Tcl_Interp *consoleinterp;
 int ColumnBase = 0;
@@ -57,9 +57,10 @@ extern int PropertyErrorDetected;
 
 /* Function prototypes for all Tcl command callbacks */
 
-int _netgen_read(ClientData, Tcl_Interp *, int, Tcl_Obj *CONST objv[]);
-int _netgen_lib(ClientData, Tcl_Interp *, int, Tcl_Obj *CONST objv[]);
-int _netgen_write(ClientData, Tcl_Interp *, int, Tcl_Obj *CONST objv[]);
+int _netgen_readnet(ClientData, Tcl_Interp *, int, Tcl_Obj *CONST objv[]);
+int _netgen_readlib(ClientData, Tcl_Interp *, int, Tcl_Obj *CONST objv[]);
+int _netgen_canonical(ClientData, Tcl_Interp *, int, Tcl_Obj *CONST objv[]);
+int _netgen_writenet(ClientData, Tcl_Interp *, int, Tcl_Obj *CONST objv[]);
 int _netgen_flatten(ClientData, Tcl_Interp *, int, Tcl_Obj *CONST objv[]);
 int _netgen_nodes(ClientData, Tcl_Interp *, int, Tcl_Obj *CONST objv[]);
 int _netgen_elements(ClientData, Tcl_Interp *, int, Tcl_Obj *CONST objv[]);
@@ -90,6 +91,7 @@ int _netcmp_automorphs(ClientData, Tcl_Interp *, int, Tcl_Obj *CONST objv[]);
 int _netcmp_equate(ClientData, Tcl_Interp *, int, Tcl_Obj *CONST objv[]);
 int _netcmp_ignore(ClientData, Tcl_Interp *, int, Tcl_Obj *CONST objv[]);
 int _netcmp_permute(ClientData, Tcl_Interp *, int, Tcl_Obj *CONST objv[]);
+int _netcmp_property(ClientData, Tcl_Interp *, int, Tcl_Obj *CONST objv[]);
 int _netcmp_exhaustive(ClientData, Tcl_Interp *, int, Tcl_Obj *CONST objv[]);
 int _netcmp_restart(ClientData, Tcl_Interp *, int, Tcl_Obj *CONST objv[]);
 int _netcmp_global(ClientData, Tcl_Interp *, int, Tcl_Obj *CONST objv[]);
@@ -106,17 +108,20 @@ typedef struct _Cmd {
 /*------------------------------------------------------*/
    
 Command netgen_cmds[] = {
-	{"readnet",		_netgen_read,
-		"[<format>] <file>\n   "
+	{"readnet",		_netgen_readnet,
+		"[<format>] <file> [<filenum>]\n   "
 		"read a netlist file (default format=auto)"},
-	{"readlib",		_netgen_lib,
+	{"readlib",		_netgen_readlib,
 		"<format> [<file>]\n   "
 		"read a format library"},
-	{"writenet", 		_netgen_write,
+	{"canonical",		_netgen_canonical,
+		"<valid_cellname>\n   "
+		"return top-level cellname and file number"},
+	{"writenet", 		_netgen_writenet,
 		"<format> <file>\n   "
 		"write a netlist file"},
 	{"flatten",		_netgen_flatten,
-		"[class] <cell>\n   "
+		"[class] [<parent>] <cell>\n   "
 		"flatten a hierarchical cell"},
 	{"nodes",		_netgen_nodes,
 		"[<element>] <cell> <file>\n   "
@@ -140,9 +145,10 @@ Command netgen_cmds[] = {
 		"<cell>\n   "
 		"describe the cell"},
 	{"cells",		_netgen_cells,
-		"[list|all] [filename]\n   "
+		"[list] [-all | -top | filename]\n   "
 		"print known cells, optionally from filename only\n   "
-		"all:  print all cells, including primitives"},
+		"-all:  print all cells, including primitives\n   "
+		"-top:  print all top-level cells"},
 	{"ports",		_netgen_ports,
 		"<cell>\n   "
 		"print ports of the cell"},
@@ -174,16 +180,16 @@ Command netgen_cmds[] = {
 
 Command netcmp_cmds[] = {
 	{"compare",		_netcmp_compare,
-		"<cell1> <cell2>\n   "
+		"<valid_cellname1> <valid_cellname2>\n   "
 		"declare two cells for netcomp netlist comparison"},
 	{"global",		_netcmp_global,
-		"<cell> <nodename>\n	"
+		"<valid_cellname> <nodename>\n	"
 		"declare a node (with possible wildcards) in the\n	"
-		"hierarchy of <cell> to be of global scope"},
+		"hierarchy of <valid_cellname> to be of global scope"},
 	{"convert",		_netcmp_convert,
-		"<cell>\n	"
+		"<valid_cellname>\n	"
 		"convert global nodes to local nodes and pins\n		"
-		"in cell <cell>"},
+		"in cell <valid_cellname>"},
 	{"iterate",		_netcmp_iterate,
 		"\n   "
 		"do one netcomp iteration"},
@@ -196,15 +202,18 @@ Command netcmp_cmds[] = {
 	{"run",			_netcmp_run,
 		"[converge|resolve]\n   "
 		"converge: run netcomp to completion (convergence)\n   "
-		"resolve: run to completion and resolve automorphisms"},
+		"resolve: run to completion and resolve symmetries"},
 	{"verify",		_netcmp_verify,
 		"[elements|nodes|only|equivalent|unique]\n   "
 		"verify results"},
-	{"automorphisms",	_netcmp_automorphs,
+	{"symmetries",	_netcmp_automorphs,
 		"\n   "
-		"print automorphisms"},
+		"print symmetries"},
 	{"equate",		_netcmp_equate,
-		"[elements|nodes|classes|pins] <name1> [<file1>] <name2> [<file2>]\n   "
+		"elements [<valid_cellname1>] <name1> [<valid_cellname2>] <name2>\n   "
+		"nodes [<valid_cellname1>] <name1> [<valid_cellname2>] <name2>\n   "
+		"pins [[<valid_cellname1>] <name1> [<valid_cellname2>] <name2>]\n   "
+		"classes <valid_cellname1> [<pins>] <valid_cellname2> [<pins>]\n   "
 		"elements: equate two elements\n   "
 		"nodes: equate two nodes\n  "
 		"classes: equate two device classes\n  "
@@ -221,6 +230,13 @@ Command netcmp_cmds[] = {
 		"capacitor: enable capacitor permutations\n   "
 		"transistor: enable transistor permutations\n   "
 		"(none): enable transistor and resistor permutations"},
+	{"property",		_netcmp_property,
+		"default: apply property defaults\n   "
+		"<device>|<model> <property_key> [...]\n   "
+		"<device>: name of a device type (capacitor, etc.)\n  "
+		"<model>: name of a device model\n   "
+		"<property_key>: name of the property to compare"},
+
 	{"exhaustive",		_netcmp_exhaustive,
 		"\n   "
 		"toggle exhaustive subdivision"},
@@ -235,7 +251,433 @@ Command netcmp_cmds[] = {
 };
  
 /*------------------------------------------------------*/
+/* Given a file number, need to find the top-level cell */
 /*------------------------------------------------------*/
+
+struct nlist *
+GetTopCell(int fnum)
+{
+    struct nlist *tp;
+
+    tp = FirstCell();
+    while (tp != NULL) {
+	if (tp->flags & CELL_TOP)
+	    if (tp->file == fnum)
+		break;
+	tp = NextCell();
+    }
+    return tp;
+}
+
+/*------------------------------------------------------*/
+/* Common function to parse a Tcl object as either a	*/
+/* netlist file name or a file number.			*/
+/*------------------------------------------------------*/
+
+int
+CommonGetFilenameOrFile(Tcl_Interp *interp, Tcl_Obj *fobj, int *fnumptr)
+{
+    int result, llen;
+    int fnum, ftest;
+    char *filename;
+    struct nlist *tp;
+
+    result = Tcl_GetIntFromObj(interp, fobj, &ftest);
+    if (result != TCL_OK) {
+	Tcl_ResetResult(interp);
+	filename = Tcl_GetString(fobj);
+	tp = LookupCell(filename);
+	if (tp == NULL) {
+	    Tcl_SetResult(interp, "No such file.\n", NULL);
+	    return TCL_ERROR;
+	}
+	else if (!(tp->flags & CELL_TOP)) {
+	    Tcl_SetResult(interp, "Name is not a file.\n", NULL);
+	    return TCL_ERROR;
+	}
+	else fnum = tp->file;
+    }
+    else {
+	fnum = ftest;
+    }
+    *fnumptr = fnum;
+    return TCL_OK; 
+}
+
+/*------------------------------------------------------*/
+/* Common function to parse a cell name.  This allows	*/
+/* several variants on the syntax:			*/
+/*							*/
+/* (1) <cellname>					*/
+/*	Assumes cellname is unique and finds the cell	*/
+/* 	and file number.				*/
+/*							*/
+/* (2) {<cellname> <fnum>}				*/
+/*	Finds the cell, given the name and file number	*/
+/*	as a list of length 2.				*/
+/*							*/
+/* (3) {<cellname> <filename>}				*/
+/*	Finds the cell, given the name and filename of	*/
+/*	the file containing the cell.			*/
+/*							*/
+/* (4) {<filename> <cellname>}				*/
+/*	is also allowed and is backwards-compatible	*/
+/*	with the arguments for "lvs".			*/
+/*							*/
+/* (5) {<fnum> <cellname>}				*/
+/*	likewise.					*/
+/*							*/
+/* (6) <fnum>						*/
+/*	refers to the top-level cell of file <fnum>	*/
+/*							*/
+/* (7) -circuit1					*/
+/*	the first circuit being compared, after the 	*/
+/*	"compare" command has been issued.		*/
+/*							*/
+/* (8) -circuit2					*/
+/*	the first circuit being compared, after the 	*/
+/*	"compare" command has been issued.		*/
+/*							*/
+/* (9) -current						*/
+/*	the most recent circuit/file to be read,	*/
+/*	after a "readnet" or "readlib" has been issued.	*/
+/*							*/
+/* Note that <filename> is equivalent to the top-level	*/
+/* cellname.  That allows the order of elements	to be	*/
+/* arbitrary.						*/
+/*							*/
+/* Function returns a Tcl result, and fills in a	*/
+/* pointer to the cell structure, and the file number	*/
+/* (which is a copy of <fnum>, if provided as an	*/
+/* argument).						*/
+/*							*/
+/* <fnum> == -1 or "*" is (theoretically) treated by	*/
+/* all commands as a wildcard matching all netlists.	*/
+/*------------------------------------------------------*/
+
+int
+CommonParseCell(Tcl_Interp *interp, Tcl_Obj *objv,
+	struct nlist **tpr, int *fnumptr)
+{
+    Tcl_Obj *tobj, *fobj;
+    int result, llen;
+    int fnum, ftest, index;
+    char *filename, *cellname;
+    struct nlist *tp, *tp2;
+
+    char *suboptions[] = {
+	"-circuit1", "-circuit2", "-current", "*", NULL
+    };
+    enum SubOptionIdx {
+	CIRCUIT1_IDX, CIRCUIT2_IDX, CURRENT_IDX, WILDCARD_IDX
+    };
+
+    result = Tcl_ListObjLength(interp, objv, &llen);
+    if (result != TCL_OK) return TCL_ERROR;
+
+    if (llen == 2) {
+
+	fnum = -1;
+
+	result = Tcl_ListObjIndex(interp, objv, 0, &tobj);
+	if (result != TCL_OK) return TCL_ERROR;
+
+	/* Is 1st argument an integer? */
+
+	result = Tcl_GetIntFromObj(interp, tobj, &ftest);
+	if (result != TCL_OK) {
+	    Tcl_ResetResult(interp);
+
+	    /* Is 1st argument a special keyword? */
+	    if (Tcl_GetIndexFromObj(interp, tobj, (CONST84 char **)suboptions,
+			"special", 0, &index) == TCL_OK) {
+		switch (index) {
+		    case CIRCUIT1_IDX:
+			if (Circuit1 == NULL) {
+			    Tcl_SetResult(interp, "No circuit has been"
+					" declared for comparison\n", NULL);
+			    return TCL_ERROR;
+			}
+			fnum = Circuit1->file;
+			result = Tcl_ListObjIndex(interp, objv, 1, &tobj);
+			if (result != TCL_OK) return TCL_ERROR;
+			break;
+		    case CIRCUIT2_IDX:
+			if (Circuit2 == NULL) {
+			    Tcl_SetResult(interp, "No circuit has been"
+					" declared for comparison\n", NULL);
+			    return TCL_ERROR;
+			}
+			fnum = Circuit2->file;
+			result = Tcl_ListObjIndex(interp, objv, 1, &tobj);
+			if (result != TCL_OK) return TCL_ERROR;
+			break;
+		    case CURRENT_IDX:
+			if (CurrentCell == NULL) {
+		            Tcl_SetResult(interp, "No current cell\n", NULL);
+			    		return TCL_ERROR;
+			}
+			fnum = CurrentCell->file;
+			result = Tcl_ListObjIndex(interp, objv, 1, &tobj);
+			if (result != TCL_OK) return TCL_ERROR;
+			break;
+		    case WILDCARD_IDX:
+			fnum = -2;
+			result = Tcl_ListObjIndex(interp, objv, 1, &tobj);
+			if (result != TCL_OK) return TCL_ERROR;
+			break;
+		}
+	    }
+	    else {
+		Tcl_ResetResult(interp);
+		fnum = -1;
+	    }
+
+	    /* Is 2nd argument an integer? */
+
+	    if (fnum == -1) {
+		result = Tcl_ListObjIndex(interp, objv, 1, &fobj);
+		if (result != TCL_OK) return TCL_ERROR;
+
+		result = Tcl_GetIntFromObj(interp, fobj, &ftest);
+		if (result != TCL_OK) {
+		    Tcl_ResetResult(interp);
+
+		    /* Check if 2nd item is a reserved keyword */
+		    if (Tcl_GetIndexFromObj(interp, fobj,
+				(CONST84 char **)suboptions,
+				"special", 0, &index) == TCL_OK) {
+			switch (index) {
+			    case CIRCUIT1_IDX:
+				if (Circuit1 == NULL) {
+				    Tcl_SetResult(interp, "No circuit has been"
+						" declared for comparison\n", NULL);
+				    return TCL_ERROR;
+				}
+				fnum = Circuit1->file;
+				break;
+			    case CIRCUIT2_IDX:
+				if (Circuit2 == NULL) {
+				    Tcl_SetResult(interp, "No circuit has been"
+						" declared for comparison\n", NULL);
+				    return TCL_ERROR;
+				}
+				fnum = Circuit2->file;
+				break;
+			    case CURRENT_IDX:
+				if (CurrentCell == NULL) {
+			            Tcl_SetResult(interp, "No current cell\n", NULL);
+				    		return TCL_ERROR;
+				}
+				fnum = CurrentCell->file;
+				break;
+			    case WILDCARD_IDX:
+				filename = NULL;
+				fnum = -1;
+				break;
+			}
+		    }
+		    else { 
+			Tcl_ResetResult(interp);
+			filename = Tcl_GetString(fobj);
+		    }
+
+		    /* Okay, neither argument is an integer, so	*/
+		    /* parse both as cell names and figure out	*/
+		    /* which one is the same as the top level,	*/
+		    /* and call that the filename.		*/
+		}
+		else {
+		    filename = NULL;
+		    fnum = ftest;
+		}
+	    }
+	    else if (fnum == -2) {
+		filename = NULL;
+		fnum = -1;
+	    }
+	    else
+		/* Both file numbers have been provided, so a	*/
+		/* filename is not required.			*/
+		filename = NULL;
+	}
+	else {
+	    filename = NULL;
+	    fnum = ftest;
+
+	    result = Tcl_ListObjIndex(interp, objv, 1, &tobj);
+	    if (result != TCL_OK) return TCL_ERROR;
+	}
+        cellname = Tcl_GetString(tobj);
+
+	if (fnum == -1) {
+
+	    /* If fnum is a wildcard, then we insist that there	*/
+	    /* must be at least one cell matching the cellname,	*/
+	    /* although the routines should be applied to all	*/
+	    /* cells of the given name in all netlists.		*/
+
+	    tp = LookupCell(cellname);
+	    if (tp == NULL) {
+		Tcl_SetResult(interp, "No such cellname!\n", NULL);
+		return TCL_ERROR;
+	    }
+	    if (filename != NULL) {
+		tp2 = LookupCell(filename);
+		if (tp2 == NULL) {
+		    Tcl_SetResult(interp, "No such cellname!\n", NULL);
+		    return TCL_ERROR;
+		}
+	    }
+	    else tp2 = NULL;
+
+	    if (!(tp->flags & CELL_TOP)) {
+		if ((tp2 != NULL) && !(tp2->flags & CELL_TOP)) {
+		    // Error:  Neither name is a file!
+		    Tcl_SetResult(interp, "No filename in list!\n", NULL);
+		    return TCL_ERROR;
+		}
+		else if (tp2 != NULL) {
+		    // tp2 is file top, tp is cell
+		    fnum = tp2->file;
+		    tp = LookupCellFile(cellname, fnum);
+		    if (tp == NULL) {
+			Tcl_SetResult(interp, "Cell is not in file!\n", NULL);
+			return TCL_ERROR;
+		    }
+		}
+	    }
+	    else {
+		// Arguments are reversed
+
+		fnum = tp->file;
+		tp = LookupCellFile(filename, fnum);
+		if (tp == NULL) {
+		    Tcl_SetResult(interp, "Cell is not in file!\n", NULL);
+		    return TCL_ERROR;
+		}
+	    }
+	}
+	else {
+	    /* File number was given, so just plug it in */	
+	    tp = LookupCellFile(cellname, fnum);
+	    if (tp == NULL) {
+		Tcl_SetResult(interp, "No such cell or bad file number!\n", NULL);
+		return TCL_ERROR;
+	    }
+	}
+
+    } else {
+	/* Only one name given;  check if it matches subOption */
+
+	if (Tcl_GetIndexFromObj(interp, objv, (CONST84 char **)suboptions,
+			"special", 0, &index) == TCL_OK) {
+
+	    switch (index) {
+		case CIRCUIT1_IDX:
+		    if (Circuit1 == NULL) {
+			Tcl_SetResult(interp, "No circuit has been"
+				" declared for comparison\n", NULL);
+			return TCL_ERROR;
+		    }
+		    tp = Circuit1;
+		    fnum = Circuit1->file;
+		    break;
+		case CIRCUIT2_IDX:
+		    if (Circuit2 == NULL) {
+			Tcl_SetResult(interp, "No circuit has been"
+				" declared for comparison\n", NULL);
+			return TCL_ERROR;
+		    }
+		    tp = Circuit2;
+		    fnum = Circuit2->file;
+		    break;
+		case CURRENT_IDX:
+		    if (CurrentCell == NULL) {
+		        Tcl_SetResult(interp, "No current cell\n", NULL);
+			    return TCL_ERROR;
+		    }
+		    tp = CurrentCell;
+		    fnum = CurrentCell->file;
+		    break;
+		case WILDCARD_IDX:
+		    Tcl_SetResult(interp, "Wildcards must be used with "
+				"a valid cellname\n", NULL);
+		    return TCL_ERROR;
+	    }
+	}
+	else {
+	    Tcl_ResetResult(interp);
+
+	    /* Check if it is a file number	*/
+
+	    result = Tcl_GetIntFromObj(interp, objv, &fnum);
+	    if (result != TCL_OK) {
+		Tcl_ResetResult(interp);
+
+		/* Only one name, which is a cellname.  If not a    */
+		/* top-level cell, then it should be a unique name. */
+
+		filename = Tcl_GetString(objv);
+		tp = LookupCell(filename);
+		if (tp == NULL) {
+		    Tcl_SetResult(interp, "No such cell!\n", NULL);
+		    return TCL_ERROR;
+		}
+		if (tp->flags & CELL_TOP)
+		    fnum = tp->file;
+		else
+		    fnum = -1;	// Use wildcard
+	    }
+	    else {
+		/* Given a file number, need to find the top-level cell */
+		tp = GetTopCell(fnum);
+		if (tp == NULL) {
+		    Tcl_SetResult(interp, "No such file number!\n", NULL);
+		    return TCL_ERROR;
+		}
+	    }
+	}
+    }
+
+    *tpr = tp;
+    *fnumptr = fnum;
+    return TCL_OK;
+}
+
+/*------------------------------------------------------*/
+/* Function name: _netgen_canonical			*/
+/* Syntax: netgen::canonical <valid_cellname>		*/
+/* Formerly: (none)					*/
+/* Results:						*/
+/* Side Effects:					*/
+/*------------------------------------------------------*/
+
+int
+_netgen_canonical(ClientData clientData,
+    Tcl_Interp *interp, int objc, Tcl_Obj *CONST objv[])
+{
+    int result;
+    struct nlist *np;
+    int filenum; 
+    Tcl_Obj *lobj;
+
+    if (objc != 2) {
+	Tcl_WrongNumArgs(interp, 1, objv, "valid_filename");
+	return TCL_ERROR;
+    }
+
+    result = CommonParseCell(interp, objv[1], &np, &filenum);
+    if (result != TCL_OK) return result;
+
+    lobj = Tcl_NewListObj(0, NULL);
+
+    Tcl_ListObjAppendElement(interp, lobj, Tcl_NewStringObj(np->name, -1));
+    Tcl_ListObjAppendElement(interp, lobj, Tcl_NewIntObj(filenum));
+    Tcl_SetObjResult(interp, lobj);
+
+    return TCL_OK;
+}
 
 /*------------------------------------------------------*/
 /* The following code breaks up the Query() command	*/
@@ -243,31 +685,49 @@ Command netcmp_cmds[] = {
 /*------------------------------------------------------*/
 
 /*------------------------------------------------------*/
-/* Function name: _netgen_read				*/
-/* Syntax: netgen::readnet [format] <filename>		*/
+/* Function name: _netgen_readnet			*/
+/* Syntax: netgen::readnet [format] <filename> [<fnum>]	*/
 /* Formerly: read r, K, Z, G, and S			*/
 /* Results:						*/
 /* Side Effects:					*/
 /*------------------------------------------------------*/
 
 int
-_netgen_read(ClientData clientData,
+_netgen_readnet(ClientData clientData,
     Tcl_Interp *interp, int objc, Tcl_Obj *CONST objv[])
 {
    char *formats[] = {
       "automatic", "ext", "extflat", "sim", "ntk", "spice",
-      "netgen", "actel", "xilinx", NULL
+      "verilog", "netgen", "actel", "xilinx", NULL
    };
    enum FormatIdx {
       AUTO_IDX, EXT_IDX, EXTFLAT_IDX, SIM_IDX, NTK_IDX,
-      SPICE_IDX, NETGEN_IDX, ACTEL_IDX, XILINX_IDX
+      SPICE_IDX, VERILOG_IDX, NETGEN_IDX, ACTEL_IDX, XILINX_IDX
    };
    struct nlist *tc;
-   int result, index, filenum;
+   int result, index, filenum = -1;
    char *retstr = NULL, *savstr = NULL;
 
+   if (objc > 1) {
+
+      /* If last argument is a number, then force file to belong to	*/
+      /* the same netlist as everything else in "filenum".		*/
+
+      if (Tcl_GetIntFromObj(interp, objv[objc - 1], &filenum) != TCL_OK) {
+	 Tcl_ResetResult(interp);
+	 filenum = -1;
+      }
+      else if (filenum < 0) {
+	 Tcl_SetResult(interp, "Cannot use negative file number!", NULL);
+	 return TCL_ERROR;
+      }
+      else {
+	 objc--;
+      }
+   }
+
    if (objc == 1 || objc > 3) {
-      Tcl_WrongNumArgs(interp, 1, objv, "?format? file");
+      Tcl_WrongNumArgs(interp, 1, objv, "?format? file ?filenum?");
       return TCL_ERROR;
    }
    else if (objc > 1) {
@@ -311,14 +771,19 @@ _netgen_read(ClientData clientData,
 
    if (retstr) savstr = STRDUP(retstr);
 
-   // Check if the file is already loaded
+   // Check if the file is already loaded.
+
    tc = LookupCell(savstr);
    if (tc != NULL) {
+      if ((filenum != -1) && (filenum != tc->file)) {
+	 Tcl_SetResult(interp, "File is already loaded as a"
+		" different file number.", NULL);
+	 return TCL_ERROR;
+      }
       filenum = tc->file;
    }
    else {
 
-      filenum = -1;
       switch(index) {
          case AUTO_IDX:
             retstr = ReadNetlist(savstr, &filenum);
@@ -337,6 +802,9 @@ _netgen_read(ClientData clientData,
             break;
          case SPICE_IDX:
             retstr = ReadSpice(savstr, &filenum);
+            break;
+         case VERILOG_IDX:
+            retstr = ReadVerilog(savstr, &filenum);
             break;
          case NETGEN_IDX:
             retstr = ReadNetgenFile(savstr, &filenum);
@@ -359,16 +827,16 @@ _netgen_read(ClientData clientData,
    return (retstr == NULL) ? TCL_ERROR : TCL_OK;
 }
 
-/*------------------------------------------------------*/
-/* Function name: _netgen_lib				*/
-/* Syntax: netgen::readlib <format> [<filename>]	*/
-/* Formerly: read X, A					*/
-/* Results:						*/
-/* Side Effects:					*/
-/*------------------------------------------------------*/
+/*--------------------------------------------------------*/
+/* Function name: _netgen_readlib			  */
+/* Syntax: netgen::readlib <format> [<filename>] [<fnum>] */
+/* Formerly: read X, A					  */
+/* Results:						  */
+/* Side Effects:					  */
+/*--------------------------------------------------------*/
 
 int
-_netgen_lib(ClientData clientData,
+_netgen_readlib(ClientData clientData,
     Tcl_Interp *interp, int objc, Tcl_Obj *CONST objv[])
 {
    char *formats[] = {
@@ -380,8 +848,26 @@ _netgen_lib(ClientData clientData,
    int result, index, fnum = -1;
    char *repstr;
 
+   if (objc > 1) {
+
+      /* If last argument is a number, then force file to belong to	*/
+      /* the same netlist as everything else in "fnum".			*/
+
+      if (Tcl_GetIntFromObj(interp, objv[objc - 1], &fnum) != TCL_OK) {
+	 Tcl_ResetResult(interp);
+	 fnum = -1;
+      }
+      else if (fnum < 0) {
+	 Tcl_SetResult(interp, "Cannot use negative file number!", NULL);
+	 return TCL_ERROR;
+      }
+      else {
+	 objc--;
+      }
+   }
+
    if (objc == 1 || objc > 3) {
-      Tcl_WrongNumArgs(interp, 1, objv, "format ?file?");
+      Tcl_WrongNumArgs(interp, 1, objv, "format [file]");
       return TCL_ERROR;
    }
    if (Tcl_GetIndexFromObj(interp, objv[1], (CONST84 char **)formats,
@@ -410,7 +896,7 @@ _netgen_lib(ClientData clientData,
          break;
       case SPICE_IDX:
 	 repstr = Tcl_GetString(objv[2]);
-         ReadSpice(repstr, &fnum);
+         ReadSpiceLib(repstr, &fnum);
          break;
       case XILINX_IDX:
          XilinxLib();
@@ -422,7 +908,7 @@ _netgen_lib(ClientData clientData,
 }
 
 /*------------------------------------------------------*/
-/* Function name: _netgen_write				*/
+/* Function name: _netgen_writenet			*/
 /* Syntax: netgen::write format cellname [filenum]	*/
 /* Formerly: k, x, z, w, o, g, s, E, and C		*/
 /* Results:						*/
@@ -430,16 +916,18 @@ _netgen_lib(ClientData clientData,
 /*------------------------------------------------------*/
 
 int
-_netgen_write(ClientData clientData,
+_netgen_writenet(ClientData clientData,
     Tcl_Interp *interp, int objc, Tcl_Obj *CONST objv[])
 {
    char *formats[] = {
       "ext", "sim", "ntk", "actel",
-      "spice", "wombat", "esacap", "netgen", "ccode", "xilinx", NULL
+      "spice", "verilog", "wombat", "esacap", "netgen",
+      "ccode", "xilinx", NULL
    };
    enum FormatIdx {
       EXT_IDX, SIM_IDX, NTK_IDX, ACTEL_IDX,
-      SPICE_IDX, WOMBAT_IDX, ESACAP_IDX, NETGEN_IDX, CCODE_IDX, XILINX_IDX
+      SPICE_IDX, VERILOG_IDX, WOMBAT_IDX, ESACAP_IDX, NETGEN_IDX,
+      CCODE_IDX, XILINX_IDX
    };
    int result, index, filenum;
    char *repstr;
@@ -480,6 +968,9 @@ _netgen_write(ClientData clientData,
       case SPICE_IDX:
          SpiceCell(repstr, filenum, "");
          break;
+      case VERILOG_IDX:
+         VerilogModule(repstr, filenum, "");
+         break;
       case WOMBAT_IDX:
          Wombat(repstr,NULL);
          break;
@@ -517,65 +1008,59 @@ _netgen_flatten(ClientData clientData,
 {
    char *repstr, *file;
    int result, llen, filenum;
-   Tcl_Obj *tobj;
-   struct nlist *tp;
+   struct nlist *tp, *tp2;
 
    if ((objc < 2) || (objc > 4)) {
-      Tcl_WrongNumArgs(interp, 1, objv, "?class? name [filenum]");
+      Tcl_WrongNumArgs(interp, 1, objv, "?class? valid_cellname");
       return TCL_ERROR;
    }
 
-   result = Tcl_GetIntFromObj(interp, objv[objc - 1], &filenum);
-   if (result != TCL_OK) {
-      Tcl_ResetResult(interp);
-      filenum = -1;
-   }
-   else objc--;
+   result = CommonParseCell(interp, objv[objc - 1], &tp, &filenum);
+   if (result != TCL_OK) return result;
+   repstr = tp->name;
 
-   result = Tcl_ListObjLength(interp, objv[objc - 1], &llen);
-   if (result != TCL_OK) return TCL_ERROR;
-
-   // Alternatively to supplying "filenum", allow the use of a
-   // 2-item list containing a source filename and a class name,
-   // in which case the search for the class name will be limited
-   // to cells in the specified file.
-
-   if (llen == 2 && filenum == -1) {
-      result = Tcl_ListObjIndex(interp, objv[objc - 1], 0, &tobj);
-      if (result != TCL_OK) return TCL_ERROR;
-      file = Tcl_GetString(tobj);
-      result = Tcl_ListObjIndex(interp, objv[objc - 1], 1, &tobj);
-      if (result != TCL_OK) return TCL_ERROR;
-      repstr = Tcl_GetString(tobj);
-      tp = LookupCell(file);
-      if (tp != NULL) {
-	 tp = LookupCellFile(repstr, tp->file);
-	 repstr = tp->name;
-      } else {
-	 Tcl_SetResult(interp, "No such file.\n", NULL);
-	 return TCL_ERROR;
-      }
-   } else {
-      repstr = Tcl_GetString(objv[objc - 1]);
-   }
-
-   if (objc == 3 || objc == 4) {
+   if (objc >= 3) {
       char *argv = Tcl_GetString(objv[1]);
-      if (!strcmp(argv, "class"))
-         FlattenInstancesOf(repstr, filenum);
+      if (!strcmp(argv, "class")) {
+	 tp = GetTopCell(filenum);
+
+	 if (objc == 4) {
+	    int numflat;
+	    tp2 = LookupCellFile(Tcl_GetString(objv[2]), filenum);
+	    if (tp2 == NULL) {
+		Tcl_SetResult(interp, "No such cell.", NULL);
+		return TCL_ERROR;
+	    }
+	    else {
+	        Printf("Flattening instances of %s in cell %s within file %s\n",
+			repstr, tp2->name, tp->name);
+		numflat = flattenInstancesOf(tp2->name, filenum, repstr);
+		if (numflat == 0) {
+		   Tcl_SetResult(interp, "No instances found to flatten.", NULL);
+		   return TCL_ERROR;
+		}
+	    }
+	 }
+	 else {
+	    Printf("Flattening instances of %s in file %s\n", repstr, tp->name);
+            FlattenInstancesOf(repstr, filenum);
+	 }
+      }
       else {
-	 Tcl_WrongNumArgs(interp, 1, objv, "class name [file]");
+	 Tcl_WrongNumArgs(interp, 1, objv, "class valid_cellname");
 	 return TCL_ERROR;
       }
    }
-   else
+   else {
+      Printf("Flattening contents of cell %s\n", repstr);
       Flatten(repstr, filenum);
+   }
    return TCL_OK;
 }
 
 /*--------------------------------------------------------------*/
 /* Function name: _netgen_nodes					*/
-/* Syntax: netgen::nodes [-list <element>] [<cell> <file>]	*/
+/* Syntax: netgen::nodes [-list <element>] [<valid_cellname>]	*/
 /* Formerly: n and N						*/
 /* Results:							*/
 /* Side Effects:						*/
@@ -589,7 +1074,7 @@ _netgen_nodes(ClientData clientData,
    char *optstart;
    int dolist = 0;
    int fnum, result;
-   struct nlist *np;
+   struct nlist *np = NULL;
 
    if (objc > 1) {
       optstart = Tcl_GetString(objv[1]);
@@ -601,7 +1086,7 @@ _netgen_nodes(ClientData clientData,
       }
    }
 
-   if ((objc < 1 || objc > 4) || (objc == 2)) {
+   if ((objc < 1 || objc > 3) || (objc == 2)) {
       Tcl_WrongNumArgs(interp, 1, objv, "?element? ?cell file?");
       return TCL_ERROR;
    }
@@ -615,24 +1100,12 @@ _netgen_nodes(ClientData clientData,
       fnum = CurrentCell->file;
    }
    else {
-      cstr = Tcl_GetString(objv[objc - 2]);
-      if (objc == 4)
-	 estr = Tcl_GetString(objv[1]);
+      result = CommonParseCell(interp, objv[objc - 1], &np, &fnum);
+      if (result != TCL_OK) return result;
 
-      // If last argument is an integer, it is the file number.  Otherwise,
-      // it is a filename and can be used to pick up the file number.
-
-      result = Tcl_GetIntFromObj(interp, objv[objc - 1], &fnum);
-      if (result != TCL_OK) {
-	 Tcl_ResetResult(interp);
-	 fstr = Tcl_GetString(objv[objc - 1]);
-	 np = LookupCell(fstr);
-	 if (np == NULL) {
-	    Tcl_SetResult(interp, "No such file.", NULL);
-	    return TCL_ERROR;
-	 }
-	 fnum = np->file;
-      }
+      cstr = np->name;
+      // If element was specified:
+      if (objc == 3) estr = Tcl_GetString(objv[objc - 2]);
    }
 
    if (estr) {
@@ -649,7 +1122,7 @@ _netgen_nodes(ClientData clientData,
 	 Tcl_Obj *lobj, *pobj;
 	 int ckto;
 
-	 np = LookupCellFile(cstr, fnum);
+	 if (np == NULL) np = LookupCellFile(cstr, fnum);
 
 	 if (np == NULL) {
 	    Tcl_SetResult(interp, "No such cell.", NULL);
@@ -697,7 +1170,7 @@ _netgen_nodes(ClientData clientData,
          ElementNodes(cstr, estr, fnum);
    }
    else
-      PrintNodes(cstr);
+      PrintNodes(cstr, fnum);
   
    if (istr) Tcl_Free(istr);
    return TCL_OK;
@@ -719,6 +1192,9 @@ _netgen_elements(ClientData clientData,
    struct objlist * (*ListSave)();
    char *optstart;
    int dolist = 0;
+   int fnum = -1;
+   int result;
+   struct nlist *np = NULL;
 
    if (objc > 1) {
       optstart = Tcl_GetString(objv[1]);
@@ -730,8 +1206,8 @@ _netgen_elements(ClientData clientData,
       }
    }
     
-   if (objc < 1 || objc > 3) {
-      Tcl_WrongNumArgs(interp, 1, objv, "?node? ?cell?");
+   if (objc < 1 || objc > 2) {
+      Tcl_WrongNumArgs(interp, 1, objv, "?node? valid_cellname");
       return TCL_ERROR;
    }
 
@@ -743,7 +1219,10 @@ _netgen_elements(ClientData clientData,
       cstr = CurrentCell->name;
    }
    else {
-      cstr = Tcl_GetString(objv[objc - 1]);
+      result = CommonParseCell(interp, objv[objc - 1], &np, &fnum);
+      if (result != TCL_OK) return result;
+
+      cstr = np->name;
       if (objc == 3)
 	 nstr = Tcl_GetString(objv[1]);
    }
@@ -751,11 +1230,10 @@ _netgen_elements(ClientData clientData,
    if (nstr) {
       if (dolist) {
 	 struct objlist *ob;
-	 struct nlist *np;
 	 Tcl_Obj *lobj;
 	 int nodenum;
 
-	 np = LookupCell(cstr);
+	 if (np == NULL) np = LookupCellFile(cstr, fnum);
 
 	 if (np == NULL) {
 	    Tcl_SetResult(interp, "No such cell.", NULL);
@@ -787,7 +1265,7 @@ _netgen_elements(ClientData clientData,
          Fanout(cstr, nstr, ALLELEMENTS);
    }
    else {
-      PrintAllElements(cstr);
+      PrintAllElements(cstr, fnum);
    }
 
    return TCL_OK;
@@ -864,7 +1342,7 @@ _netgen_protochip(ClientData clientData,
 
 /*------------------------------------------------------*/
 /* Function name: _netgen_instances			*/
-/* Syntax: netgen::instances cell			*/
+/* Syntax: netgen::instances valid_cellname		*/
 /* Formerly: i						*/
 /* Results:						*/
 /* Side Effects:					*/
@@ -875,19 +1353,26 @@ _netgen_instances(ClientData clientData,
     Tcl_Interp *interp, int objc, Tcl_Obj *CONST objv[])
 {
    char *repstr;
+   int result;
+   int fnum = -1;
+   struct nlist *np = NULL;
 
    if (objc != 2) {
-      Tcl_WrongNumArgs(interp, 1, objv, "cell");
+      Tcl_WrongNumArgs(interp, 1, objv, "valid_cellname");
       return TCL_ERROR;
    }
-   repstr = Tcl_GetString(objv[1]);
-   PrintInstances(repstr);
+
+   result = CommonParseCell(interp, objv[1], &np, &fnum);
+   if (result != TCL_OK) return result;
+
+   repstr = np->name;
+   PrintInstances(repstr, fnum);
    return TCL_OK;
 }
 
 /*------------------------------------------------------*/
 /* Function name: _netgen_contents			*/
-/* Syntax: netgen::contents cell			*/
+/* Syntax: netgen::contents valid_cellname		*/
 /* Formerly: c						*/
 /* Results:						*/
 /* Side Effects:					*/
@@ -898,19 +1383,25 @@ _netgen_contents(ClientData clientData,
     Tcl_Interp *interp, int objc, Tcl_Obj *CONST objv[])
 {
    char *repstr;
+   int result;
+   int fnum = -1;
+   struct nlist *np = NULL;
 
    if (objc != 2) {
-      Tcl_WrongNumArgs(interp, 1, objv, "cell");
+      Tcl_WrongNumArgs(interp, 1, objv, "valid_cellname");
       return TCL_ERROR;
    }
-   repstr = Tcl_GetString(objv[1]);
-   PrintCell(repstr);
+   result = CommonParseCell(interp, objv[1], &np, &fnum);
+   if (result != TCL_OK) return result;
+
+   repstr = np->name;
+   PrintCell(repstr, fnum);
    return TCL_OK;
 }
 
 /*------------------------------------------------------*/
 /* Function name: _netgen_describe			*/
-/* Syntax: netgen::describe cell			*/
+/* Syntax: netgen::describe valid_cellname		*/
 /* Formerly: d						*/
 /* Results:						*/
 /* Side Effects:					*/
@@ -923,23 +1414,24 @@ _netgen_describe(ClientData clientData,
    char *repstr;
    int file = -1;
    int result;
+   struct nlist *np = NULL;
 
-   if (objc != 2 && objc != 3) {
-      Tcl_WrongNumArgs(interp, 1, objv, "cell [file]");
+   if (objc != 2) {
+      Tcl_WrongNumArgs(interp, 1, objv, "valid_cellname");
       return TCL_ERROR;
    }
-   repstr = Tcl_GetString(objv[1]);
-   if (objc == 3) {
-      result = Tcl_GetIntFromObj(interp, objv[2], &file);
-      if (result != TCL_OK) return result;
-   }
+
+   result = CommonParseCell(interp, objv[1], &np, &file);
+   if (result != TCL_OK) return result;
+
+   repstr = np->name;
    DescribeInstance(repstr, file);
    return TCL_OK;
 }
 
 /*------------------------------------------------------*/
 /* Function name: _netgen_cells				*/
-/* Syntax: netgen::cells [list|all] [filename]		*/
+/* Syntax: netgen::cells [list|all] [valid_filename]	*/
 /* Formerly: h and H					*/
 /* Results:						*/
 /* Side Effects:					*/
@@ -950,27 +1442,75 @@ _netgen_cells(ClientData clientData,
     Tcl_Interp *interp, int objc, Tcl_Obj *CONST objv[])
 {
    char *repstr, *filename = NULL;
+   char *optstart;
+   int filenum = -1;
+   struct nlist *np = NULL;
+   int result, printopt, dolist = 0, doall = 0, dotop = 0;
 
-   if (objc < 1 || objc > 3) {
-      Tcl_WrongNumArgs(interp, 1, objv, "?list|all? ?filename?");
-      return TCL_ERROR;
-   }
-   if (objc == 1) 
-      PrintCellHashTable(0, NULL);
-   else {
-      if (objc == 3) {
-	 filename = Tcl_GetString(objv[2]);
+   while (objc > 1) {
+      optstart = Tcl_GetString(objv[1]);
+      if (*optstart == '-') optstart++;
+      if (!strcmp(optstart, "list")) {
+	 dolist = 1;
+	 objv++;
+	 objc--;
       }
-      if (!strncmp(Tcl_GetString(objv[1]), "list", 4)) {
-	 PrintCellHashTable(2, filename);
+      else if (!strcmp(optstart, "all")) {
+	 doall = 1;
+	 objv++;
+	 objc--;
+      }
+      else if (!strcmp(optstart, "top")) {
+	 dotop = 1;
+	 objv++;
+	 objc--;
       }
       else {
-         repstr = Tcl_GetString(objv[1]);
-         if (strncmp(repstr, "all", 3)) {
-	    Tcl_WrongNumArgs(interp, 1, objv, "all [filename]");
-	    return TCL_ERROR;
-         }
-         PrintCellHashTable(1, filename);
+	 result = CommonParseCell(interp, objv[1], &np, &filenum);
+	 if (result != TCL_OK) return result;
+	 objv++;
+	 objc--;
+      }
+   }
+
+   if (objc != 1) {
+      Tcl_WrongNumArgs(interp, 1, objv, "[list] [-top] [-all] [valid_filename]");
+      return TCL_ERROR;
+   }
+   else {
+      Tcl_Obj *lobj;
+
+      if (dotop) {
+	 if (dolist)
+	     lobj = Tcl_NewListObj(0, NULL);
+	 else
+	     Fprintf(stdout, "Top level cells: ");
+	 np = FirstCell();
+	 while (np != NULL) {
+	    if ((np->flags & CELL_TOP) && ((filenum == -1) ||
+			(np->file == filenum))) {
+		
+		if (dolist)
+		    Tcl_ListObjAppendElement(interp, lobj,
+			Tcl_NewStringObj(np->name, -1));
+		else
+		    Fprintf(stdout, "%s ", np->name);
+	    }
+	    np = NextCell();
+	 }
+	 if (dolist)
+	    Tcl_SetObjResult(interp, lobj);
+	 else
+	    Fprintf(stdout, "\n");
+
+	 return TCL_OK;
+      }
+      else {
+	 if (dolist)
+	    printopt = (doall) ? 3 : 2;
+	 else
+	    printopt = (doall) ? 1 : 0;
+         PrintCellHashTable(printopt, filenum);
       }
    }
    return TCL_OK;
@@ -978,7 +1518,7 @@ _netgen_cells(ClientData clientData,
 
 /*------------------------------------------------------*/
 /* Function name: _netgen_model				*/
-/* Syntax: netgen::model name class			*/
+/* Syntax: netgen::model valid_cellname class		*/
 /* Formerly: (nothing)					*/
 /* Results:						*/
 /* Side Effects:					*/
@@ -988,9 +1528,11 @@ int
 _netgen_model(ClientData clientData,
     Tcl_Interp *interp, int objc, Tcl_Obj *CONST objv[])
 {
-   struct nlist *cell;
+   struct nlist *tp;
    char *model, *retclass;
    unsigned char class;
+   int fnum = -1;
+   int result, index, nports;
 
    char *modelclasses[] = {
       "undefined", "nmos", "pmos", "pnp", "npn",
@@ -1004,23 +1546,38 @@ _netgen_model(ClientData clientData,
       MODULE_IDX, BLACKBOX_IDX, XLINE_IDX, MOSCAP_IDX,
       MOSFET_IDX, BJT_IDX, SUBCKT_IDX
    };
-   int result, index, nports;
 
    if (objc != 3 && objc != 2) {
-      Tcl_WrongNumArgs(interp, 1, objv, "name [class]");
+      Tcl_WrongNumArgs(interp, 1, objv, "valid_cellname [class]");
       return TCL_ERROR;
    }
 
-   model = Tcl_GetString(objv[1]);
-   cell = LookupCell(model);
+   /* Check for "model blackbox on|off"	*/
+   /* Behavior is to treat empty subcircuits as blackbox cells */
 
-   if (cell == NULL) {
-      Tcl_SetResult(interp, "No such cell.", NULL);
-      return TCL_ERROR;
+   if ((objc > 1) && !strcmp(Tcl_GetString(objv[1]), "blackbox")) {
+      if ((objc > 2) && !strcmp(Tcl_GetString(objv[2]), "on")) {
+	 auto_blackbox = TRUE;
+	 return TCL_OK;
+      }
+      else if ((objc > 2) && !strcmp(Tcl_GetString(objv[2]), "off")) {
+	 auto_blackbox = FALSE;
+	 return TCL_OK;
+      }
+      else if (objc == 2) {
+	 Tcl_SetObjResult(interp, Tcl_NewBooleanObj(auto_blackbox));
+	 return TCL_OK;
+      }
    }
-   nports = NumberOfPorts(model);
+
+   result = CommonParseCell(interp, objv[1], &tp, &fnum);
+   if (result != TCL_OK)
+      return result;
 
    if (objc == 3) {
+      model = Tcl_GetString(objv[2]);
+      nports = NumberOfPorts(model);
+
       if (Tcl_GetIndexFromObj(interp, objv[2], (CONST84 char **)modelclasses,
 		"class", 0, &index) != TCL_OK) {
 	 return TCL_ERROR;
@@ -1085,10 +1642,10 @@ _netgen_model(ClientData clientData,
 	    class = CLASS_SUBCKT;
 	    break;
       }
-      cell->class = class;
+      tp->class = class;
    }
    else {
-      class = cell->class;
+      class = tp->class;
 
       switch (class) {
 	 case CLASS_NMOS: case CLASS_NMOS4:
@@ -1127,6 +1684,13 @@ _netgen_model(ClientData clientData,
 	    retclass = modelclasses[SUBCKT_IDX];
 	    break;
 
+	 case CLASS_MODULE:
+	    if (auto_blackbox)
+		retclass = modelclasses[BLACKBOX_IDX];
+	    else
+		retclass = modelclasses[MODULE_IDX];
+	    break;
+
 	 default: /* (includes case CLASS_UNDEF) */
 	    retclass = modelclasses[UNDEF_IDX];
 	    break;
@@ -1153,19 +1717,26 @@ _netgen_ports(ClientData clientData,
     Tcl_Interp *interp, int objc, Tcl_Obj *CONST objv[])
 {
    char *repstr;
+   int result;
+   struct nlist *np;
+   int filenum = -1;
 
    if (objc != 2) {
-      Tcl_WrongNumArgs(interp, 1, objv, "cell");
+      Tcl_WrongNumArgs(interp, 1, objv, "valid_cellname");
       return TCL_ERROR;
    }
-   repstr = Tcl_GetString(objv[1]);
-   PrintPortsInCell(repstr);
+
+   result = CommonParseCell(interp, objv[1], &np, &filenum);
+   if (result != TCL_OK) return result;
+   repstr = np->name;
+
+   PrintPortsInCell(repstr, filenum);
    return TCL_OK;
 }
 
 /*------------------------------------------------------*/
 /* Function name: _netgen_leaves			*/
-/* Syntax: netgen::leaves [cell]			*/
+/* Syntax: netgen::leaves [valid_cellname]		*/
 /* Formerly: l and L					*/
 /* Results:						*/
 /* Side Effects:					*/
@@ -1176,9 +1747,12 @@ _netgen_leaves(ClientData clientData,
     Tcl_Interp *interp, int objc, Tcl_Obj *CONST objv[])
 {
    char *repstr;
+   int result;
+   int filenum = -1;
+   struct nlist *np;
 
    if (objc != 1 && objc != 2) {
-      Tcl_WrongNumArgs(interp, 1, objv, "?cell?");
+      Tcl_WrongNumArgs(interp, 1, objv, "[valid_cellname]");
       return TCL_ERROR;
    }
    if (objc == 1) {
@@ -1186,9 +1760,12 @@ _netgen_leaves(ClientData clientData,
       PrintAllLeaves();
    }
    else {
-      repstr = Tcl_GetString(objv[1]);
+      result = CommonParseCell(interp, objv[1], &np, &filenum);
+      if (result != TCL_OK) return result;
+
+      repstr = np->name;
       ClearDumpedList();
-      PrintLeavesInCell(repstr);
+      PrintLeavesInCell(repstr, filenum);
    }
    return TCL_OK;
 }
@@ -1209,10 +1786,16 @@ _netgen_quit(ClientData clientData,
       Tcl_WrongNumArgs(interp, 1, objv, "(no arguments)");
       return TCL_ERROR;
    }
-   exit(0);	/* In Tcl, this should remove the	*/
-		/* netgen module, not exit abrubtly!	*/
 
-   /* return TCL_OK; */
+   /* Call tkcon's exit routine, which will make sure	*/
+   /* the history file is updated before final exit.	*/
+
+   if (consoleinterp == interp)
+      Tcl_Exit(TCL_OK);
+   else
+      Tcl_Eval(interp, "catch {tkcon eval exit}\n");
+
+   return TCL_OK; 	/* Not reached */
 }
 
 /*------------------------------------------------------*/
@@ -1395,9 +1978,8 @@ _netgen_printmem(ClientData clientData,
 
 /*------------------------------------------------------*/
 /* Function name: _netcmp_compare			*/
-/* Syntax: netgen::compare cell1 cell2			*/
-/* or (preferably)					*/
-/*	   netgen::compare {file1 cell1} {file2 cell2}	*/
+/* Syntax:						*/
+/*    netgen::compare valid_cellname1 valid_cellname2	*/
 /* Formerly: c						*/
 /* Results:						*/
 /* Side Effects:					*/
@@ -1407,16 +1989,31 @@ int
 _netcmp_compare(ClientData clientData,
     Tcl_Interp *interp, int objc, Tcl_Obj *CONST objv[])
 {
-   char *name1, *name2, *file1, *file2;
-   int fnum1, fnum2;
+   char *name1, *name2, *file1, *file2, *optstart;
+   int fnum1, fnum2, dolist = 0;
    int dohierarchy = FALSE;
+   int assignonly = FALSE;
    int argstart = 1, qresult, llen, result;
    struct Correspond *nextcomp;
    struct nlist *tp;
-   Tcl_Obj *tobj;
+   Tcl_Obj *flist = NULL;
 
    if (objc > 1) {
-      if (!strncmp(Tcl_GetString(objv[argstart]), "hier", 4)) {
+      optstart = Tcl_GetString(objv[1]);
+      if (*optstart == '-') optstart++;
+      if (!strcmp(optstart, "list")) {
+	 dolist = 1;
+	 objv++;
+	 objc--;
+      }
+   }
+
+   if (objc > 1) {
+      if (!strncmp(Tcl_GetString(objv[argstart]), "assign", 6)) {
+	 assignonly = TRUE;
+ 	 argstart++;
+      }
+      else if (!strncmp(Tcl_GetString(objv[argstart]), "hier", 4)) {
 	 dohierarchy = TRUE;
  	 argstart++;
       }
@@ -1441,65 +2038,24 @@ _netcmp_compare(ClientData clientData,
       }
       else if ((objc - argstart) == 2) {
 
-         result = Tcl_ListObjLength(interp, objv[argstart], &llen);
+	 result = CommonParseCell(interp, objv[argstart], &tp, &fnum1);
          if (result != TCL_OK) return TCL_ERROR;
-         if (llen == 2) {
-	    result = Tcl_ListObjIndex(interp, objv[argstart], 0, &tobj);
-	    if (result != TCL_OK) return TCL_ERROR;
-	    result = Tcl_GetIntFromObj(interp, tobj, &fnum1);
-	    if (result != TCL_OK) {
-		Tcl_ResetResult(interp);
-		fnum1 = -1;
-		file1 = Tcl_GetString(tobj);
-	    }
-	    else file1 = NULL;
-	    result = Tcl_ListObjIndex(interp, objv[argstart], 1, &tobj);
-	    if (result != TCL_OK) return TCL_ERROR;
-            name1 = Tcl_GetString(tobj);
+	 else if (fnum1 == -1) {
+	    Tcl_SetResult(interp, "Cannot use wildcard with compare command.\n",
+			NULL);
+	    return TCL_ERROR;
+	 }
+         name1 = tp->name;
+	 argstart++;
 
-	    if (fnum1 == -1) {
-		tp = LookupCell(file1);
-		if (tp != NULL) {
-		   fnum1 = tp->file;
-		   tp = LookupCellFile(name1, fnum1);
-		   if (tp != NULL)
-		      name1 = tp->name;
-		}
-            }
-         } else {
-            file1 = Tcl_GetString(objv[argstart]);
-	    name1 = file1;
-         }
-
-         result = Tcl_ListObjLength(interp, objv[argstart + 1], &llen);
+	 result = CommonParseCell(interp, objv[argstart], &tp, &fnum2);
          if (result != TCL_OK) return TCL_ERROR;
-         if (llen == 2) {
-	    result = Tcl_ListObjIndex(interp, objv[argstart + 1], 0, &tobj);
-	    if (result != TCL_OK) return TCL_ERROR;
-	    result = Tcl_GetIntFromObj(interp, tobj, &fnum2);
-	    if (result != TCL_OK) {
-		Tcl_ResetResult(interp);
-		fnum2 = -1;
-		file2 = Tcl_GetString(tobj);
-	    }
-	    else file2 = NULL;
-	    result = Tcl_ListObjIndex(interp, objv[argstart + 1], 1, &tobj);
-	    if (result != TCL_OK) return TCL_ERROR;
-            name2 = Tcl_GetString(tobj);
-
-	    if (fnum2 == -1) {
-        	tp = LookupCell(file1);
-        	if (tp != NULL) {
-	           fnum2 = tp->file;
-	           tp = LookupCellFile(name2, fnum2);
-	           if (tp != NULL)
-	              name2 = tp->name;
-		}
-            }
-         } else {
-            file2 = Tcl_GetString(objv[argstart + 1]);
-	    name2 = file2;
-         }
+	 else if (fnum2 == -1) {
+	    Tcl_SetResult(interp, "Cannot use wildcard with compare command.\n",
+			NULL);
+	    return TCL_ERROR;
+	 }
+         name2 = tp->name;
 
          if (dohierarchy) {
 	    RemoveCompareQueue();
@@ -1511,12 +2067,26 @@ _netcmp_compare(ClientData clientData,
 	    }
 	    GetCompareQueueTop(&name1, &fnum1, &name2, &fnum2);
          }
+	 else if (assignonly) {
+	    AssignCircuits(name1, fnum1, name2, fnum2);
+	    return TCL_OK;
+	 }
       }
    }
    else {
-      Tcl_WrongNumArgs(interp, 1, objv, "[hierarchical] cell1 cell2");
+      Tcl_WrongNumArgs(interp, 1, objv,
+		"[hierarchical] valid_cellname1 valid_cellname2");
       return TCL_ERROR;
    }
+
+   if (fnum1 == fnum2) {
+      Tcl_SetResult(interp, "Cannot compare two cells in the same netlist.",
+		NULL);
+      return TCL_ERROR;
+   }
+
+   UniquePins(name1, fnum1);		// Check for and remove duplicate pins
+   UniquePins(name2, fnum2);		// Check for and remove duplicate pins
 
    // Resolve global nodes into local nodes and ports
    if (dohierarchy) {
@@ -1524,10 +2094,15 @@ _netcmp_compare(ClientData clientData,
       ConvertGlobals(name2, fnum2);
    }
 
-   CreateTwoLists(name1, fnum1, name2, fnum2);
+   CreateTwoLists(name1, fnum1, name2, fnum2, dolist);
+   while (PrematchLists(name1, fnum1, name2, fnum2) > 0) {
+      Fprintf(stdout, "Making another compare attempt.\n");
+      CreateTwoLists(name1, fnum1, name2, fnum2, dolist);
+   }
 
    // Return the names of the two cells being compared, if doing "compare
-   // hierarchical"
+   // hierarchical".  If "-list" was specified, then append the output
+   // to the end of the list.
 
    if (dohierarchy) {
       Tcl_Obj *lobj;
@@ -1541,6 +2116,9 @@ _netcmp_compare(ClientData clientData,
 #ifdef DEBUG_ALLOC
    PrintCoreStats();
 #endif
+
+   /* Arrange properties in the two compared cells */
+   /* ResolveProperties(name1, fnum1, name2, fnum2); */
 
    Permute();		/* Apply permutations */
    return TCL_OK;
@@ -1679,11 +2257,11 @@ _netcmp_print(ClientData clientData,
    }
 
    enable_interrupt();
-   if (objc == 1 || index == ELEM_IDX)
-      PrintElementClasses(ElementClasses, class, dolist);
-
    if (objc == 1 || index == NODE_IDX)
       PrintNodeClasses(NodeClasses, class, dolist);
+
+   if (objc == 1 || index == ELEM_IDX)
+      PrintElementClasses(ElementClasses, class, dolist);
 
    if (objc == 2 && index == QUEUE_IDX) {
       char *name1, *name2;
@@ -1722,6 +2300,19 @@ _netcmp_run(ClientData clientData,
    };
    int result, index;
    int automorphisms;
+   char *optstart;
+   int dolist;
+
+   dolist = 0;
+   if (objc > 1) {
+      optstart = Tcl_GetString(objv[1]);
+      if (*optstart == '-') optstart++;
+      if (!strcmp(optstart, "list")) {
+	 dolist = 1;
+	 objv++;
+	 objc--;
+      }
+   }
 
    if (objc == 1)
       index = RESOLVE_IDX;
@@ -1732,7 +2323,6 @@ _netcmp_run(ClientData clientData,
       }
    }
 
-
    switch(index) {
       case CONVERGE_IDX:
 	 if (ElementClasses == NULL || NodeClasses == NULL) {
@@ -1741,8 +2331,13 @@ _netcmp_run(ClientData clientData,
 	 else {
 	    enable_interrupt();
 	    while (!Iterate() && !InterruptPending);
-	    _netcmp_verify(clientData, interp, 1, NULL);
+	    if (dolist) {
+	       result = _netcmp_verify(clientData, interp, 2, objv - 1);
+	    }
+	    else
+	       result = _netcmp_verify(clientData, interp, 1, NULL);
 	    disable_interrupt();
+	    if (result != TCL_OK) return result;
 	 }
 	 break;
       case RESOLVE_IDX:
@@ -1756,20 +2351,36 @@ _netcmp_run(ClientData clientData,
 	    while (!Iterate() && !InterruptPending);
 	    automorphisms = VerifyMatching();
 	    if (automorphisms == -1)
-	       Fprintf(stdout, "Graphs do not match.\n");
+	       Fprintf(stdout, "Netlists do not match.\n");
 	    else if (automorphisms == 0)
-	       Fprintf(stdout, "Graphs match uniquely.\n");
+	       Fprintf(stdout, "Netlists match uniquely.\n");
 	    else {
-	       Fprintf(stdout, "Graphs match with %d automorphisms.\n",
-			automorphisms);
-	       PermuteAutomorphisms();
+	       // First try to resolve automorphisms uniquely using
+	       // property matching
+	       automorphisms = ResolveAutomorphsByProperty();
+	       if (automorphisms == 0)
+	          Fprintf(stdout, "Netlists match uniquely.\n");
+	       else {
+
+	          // Next, attempt to resolve automorphisms uniquely by
+	          // using the pin names
+		  automorphisms = ResolveAutomorphsByPin();
+	       }
+
+	       if (automorphisms == 0)
+	          Fprintf(stdout, "Netlists match uniquely.\n");
+	       else
+	          // Anything left is truly indistinguishable
+	          Fprintf(stdout, "Netlists match with %d symmetr%s.\n",
+				automorphisms, (automorphisms == 1) ? "y" : "ies");
+
 	       while ((automorphisms = ResolveAutomorphisms()) > 0);
-	       if (automorphisms == -1) Fprintf(stdout, "Graphs do not match.\n");
+	       if (automorphisms == -1) Fprintf(stdout, "Netlists do not match.\n");
 		  else Fprintf(stdout, "Circuits match correctly.\n");
 	    }
 	    if (PropertyErrorDetected) {
 	       Fprintf(stdout, "There were property errors.\n");
-	       PrintPropertyResults();
+	       PrintPropertyResults(dolist);
 	    }
 	    disable_interrupt();
          }
@@ -1783,9 +2394,17 @@ _netcmp_run(ClientData clientData,
 /* Syntax: netgen::verify [option]			*/
 /* 	options: nodes, elements, only, all,		*/
 /*		 equivalent, or unique.			*/
+/* 	option "-list" may be used with nodes, elements	*/
+/*		 all, or no option.			*/
 /* Formerly: v						*/
 /* Results:						*/
+/*	For only, equivalent, unique:  Return 1 if 	*/
+/*	verified, zero if not.				*/
 /* Side Effects:					*/
+/*	For options elements, nodes, and all without	*/
+/*	option -list:  Write output to log file.	*/
+/*	For -list options, append list to global	*/
+/*	variable "lvs_out", if it exists.		*/
 /*------------------------------------------------------*/
 
 int
@@ -1798,8 +2417,23 @@ _netcmp_verify(ClientData clientData,
    enum OptionIdx {
       NODE_IDX, ELEM_IDX, PROP_IDX, ONLY_IDX, ALL_IDX, EQUIV_IDX, UNIQUE_IDX
    };
+   char *optstart;
    int result, index = -1;
    int automorphisms;
+   int dolist = 0;
+   Tcl_Obj *egood, *ebad, *ngood, *nbad;
+
+   if (objc > 1) {
+      optstart = Tcl_GetString(objv[1]);
+      if (*optstart == '-') optstart++;
+      if (!strcmp(optstart, "list")) {
+	 dolist = 1;
+	 egood = ngood = NULL;
+	 ebad = nbad = NULL;
+	 objv++;
+	 objc--;
+      }
+   }
 
    if (objc != 1 && objc != 2) {
       Tcl_WrongNumArgs(interp, 1, objv,	
@@ -1814,32 +2448,50 @@ _netcmp_verify(ClientData clientData,
    }
 
    if (ElementClasses == NULL || NodeClasses == NULL) {
-      Printf("Cell has no elements and/or nodes.\n");
-      Tcl_SetObjResult(interp, Tcl_NewIntObj(-1));
-      // return TCL_ERROR;
+      if (index == EQUIV_IDX || index == UNIQUE_IDX)
+	 Tcl_SetObjResult(interp, Tcl_NewIntObj(-1));
+      else if (CurrentCell != NULL)
+	 Fprintf(stdout, "Verify:  cell %s has no elements and/or nodes."
+		"  Not checked.\n", CurrentCell->name);
+      else
+	 Fprintf(stdout, "Verify:  no current cell to verify.\n");
       return TCL_OK;
    }
    else {
       automorphisms = VerifyMatching();
       if (automorphisms == -1) {
 	 enable_interrupt();
-	 if (objc == 1 || index == ELEM_IDX || index == ALL_IDX) {
-	     if (Debug == TRUE)
-	        PrintIllegalElementClasses();	// Old style
-	     else
-	        FormatIllegalElementClasses();	// Side-by-side
-	 }
 	 if (objc == 1 || index == NODE_IDX || index == ALL_IDX) {
 	     if (Debug == TRUE)
 	        PrintIllegalNodeClasses();	// Old style
-	     else
-	        FormatIllegalNodeClasses();	// Side-by-side
+	     else {
+	        FormatIllegalNodeClasses(); // Side-by-side, to log file
+	        if (dolist) {
+	           nbad = ListNodeClasses(FALSE);	// As Tcl nested list
+#if 0
+	           ngood = ListNodeClasses(TRUE);	// As Tcl nested list
+#endif
+		}
+	     }
+	 }
+	 if (objc == 1 || index == ELEM_IDX || index == ALL_IDX) {
+	     if (Debug == TRUE)
+	        PrintIllegalElementClasses();	// Old style
+	     else {
+	        FormatIllegalElementClasses();	// Side-by-side, to log file
+	        if (dolist) {
+	           ebad = ListElementClasses(FALSE); // As Tcl nested list
+#if 0
+	           egood = ListElementClasses(TRUE); // As Tcl nested list
+#endif
+		}
+	     }
 	 }
 	 disable_interrupt();
 	 if (index == EQUIV_IDX || index == UNIQUE_IDX)
 	     Tcl_SetObjResult(interp, Tcl_NewBooleanObj(0));
 	 else
-	     Fprintf(stdout, "Graphs do not match.\n");
+	     Fprintf(stdout, "Netlists do not match.\n");
       }
       else {
 	 if (automorphisms) {
@@ -1848,8 +2500,8 @@ _netcmp_verify(ClientData clientData,
 	    else if (index == UNIQUE_IDX)
 	        Tcl_SetObjResult(interp, Tcl_NewBooleanObj(0));
 	    else
-	        Fprintf(stdout, "Circuits match with %d automorphism%s.\n",
-			automorphisms, (automorphisms == 1) ? "" : "s");
+	        Printf("Circuits match with %d symmetr%s.\n",
+			automorphisms, (automorphisms == 1) ? "y" : "ies");
 	 }
 	 else {
 	    if ((index == EQUIV_IDX) || (index == UNIQUE_IDX)) {
@@ -1864,9 +2516,57 @@ _netcmp_verify(ClientData clientData,
 		   Fprintf(stdout, "Property errors were found.\n");
 	    }
 	 }
-         if ((index == PROP_IDX) && (PropertyErrorDetected != 0)) {
-	    PrintPropertyResults();
+#if 0
+	 if (dolist) {
+	    ngood = ListNodeClasses(TRUE);	// As Tcl nested list
+	    egood = ListElementClasses(TRUE);	// As Tcl nested list
 	 }
+#endif
+         if ((index == PROP_IDX) && (PropertyErrorDetected != 0)) {
+	    PrintPropertyResults(dolist);
+	 }
+      }
+   }
+
+   /* If "dolist" has been specified, then return the	*/
+   /* list-formatted output.  For "verify nodes" or	*/
+   /* "verify elements", return the associated list.	*/
+   /* For "verify" or "verify all", return a nested	*/
+   /* list of {node list, element list}.		*/
+
+   if (dolist)
+   {
+      if (objc == 1 || index == NODE_IDX || index == ALL_IDX) {
+	 if (nbad == NULL) nbad = Tcl_NewListObj(0, NULL);
+	 Tcl_SetVar2Ex(interp, "lvs_out", NULL,
+		Tcl_NewStringObj("badnets", -1),
+		TCL_APPEND_VALUE | TCL_LIST_ELEMENT);
+	 Tcl_SetVar2Ex(interp, "lvs_out", NULL, nbad,
+		TCL_APPEND_VALUE | TCL_LIST_ELEMENT);
+#if 0
+	 if (ngood == NULL) ngood = Tcl_NewListObj(0, NULL);
+	 Tcl_SetVar2Ex(interp, "lvs_out", NULL,
+		Tcl_NewStringObj("goodnets", -1),
+		TCL_APPEND_VALUE | TCL_LIST_ELEMENT);
+	 Tcl_SetVar2Ex(interp, "lvs_out", NULL, ngood,
+		TCL_APPEND_VALUE | TCL_LIST_ELEMENT);
+#endif
+      }
+      if (objc == 1 || index == ELEM_IDX || index == ALL_IDX) {
+	 if (ebad == NULL) ebad = Tcl_NewListObj(0, NULL);
+	 Tcl_SetVar2Ex(interp, "lvs_out", NULL,
+		Tcl_NewStringObj("badelements", -1),
+		TCL_APPEND_VALUE | TCL_LIST_ELEMENT);
+	 Tcl_SetVar2Ex(interp, "lvs_out", NULL, ebad,
+		TCL_APPEND_VALUE | TCL_LIST_ELEMENT);
+#if 0
+	 if (egood == NULL) egood = Tcl_NewListObj(0, NULL);
+	 Tcl_SetVar2Ex(interp, "lvs_out", NULL,
+		Tcl_NewStringObj("goodelements", -1),
+		TCL_APPEND_VALUE | TCL_LIST_ELEMENT);
+	 Tcl_SetVar2Ex(interp, "lvs_out", NULL, egood,
+		TCL_APPEND_VALUE | TCL_LIST_ELEMENT);
+#endif
       }
    }
    return TCL_OK;
@@ -1894,7 +2594,7 @@ _netcmp_automorphs(ClientData clientData,
 
 /*------------------------------------------------------*/
 /* Function name: _netcmp_convert			*/
-/* Syntax: netgen::convert <cell> [<filenum>]		*/
+/* Syntax: netgen::convert <valid_cellname>		*/
 /* Formerly: nonexistant function			*/
 /* Results: none					*/
 /* Side Effects:  one or more global nodes changed to	*/
@@ -1906,19 +2606,17 @@ _netcmp_convert(ClientData clientData,
     Tcl_Interp *interp, int objc, Tcl_Obj *CONST objv[])
 {
     char *cellname;
-    int filenum, result;
+    int filenum = -1;
+    int result;
+    struct nlist *np;
 
-    if (objc != 2 && objc != 3) {
-	Tcl_WrongNumArgs(interp, 1, objv, "<cell>");
+    if (objc != 2) {
+	Tcl_WrongNumArgs(interp, 1, objv, "valid_cellname");
 	return TCL_ERROR;
     }
-    cellname = Tcl_GetString(objv[1]);   
-
-    if (objc == 3) {
-	result = Tcl_GetIntFromObj(interp, objv[2], &filenum);
-	if (result != TCL_OK) return result;
-    }
-    else filenum = -1;
+    result = CommonParseCell(interp, objv[1], &np, &filenum);
+    if (result != TCL_OK) return result;
+    cellname = np->name;
 
     ConvertGlobals(cellname, filenum);
     return TCL_OK;
@@ -1926,7 +2624,7 @@ _netcmp_convert(ClientData clientData,
 
 /*------------------------------------------------------*/
 /* Function name: _netcmp_global			*/
-/* Syntax: netgen::global <cell> <name>			*/
+/* Syntax: netgen::global <valid_cellname> <name>	*/
 /* Formerly: nonexistant function			*/
 /* Results: returns number of matching nets found	*/
 /* Side Effects:  one or more nodes changed to global	*/
@@ -1937,71 +2635,22 @@ int
 _netcmp_global(ClientData clientData,
     Tcl_Interp *interp, int objc, Tcl_Obj *CONST objv[])
 {
-   Tcl_Obj *tobj;
    char *filename, *cellname, *pattern;
-   int numchanged = 0, nextp, p, fnum, llen, result;
+   int numchanged = 0, p, fnum, llen, result;
    struct nlist *tp;
 
    if (objc < 2) {
-      Tcl_WrongNumArgs(interp, 1, objv, "<cell>|<filenum> <pattern> [...]");
+      Tcl_WrongNumArgs(interp, 1, objv, "<valid_cellname> <pattern> [...]");
       return TCL_ERROR;
    }
 
    /* Check if first argument is a file number */
 
-   result = Tcl_GetIntFromObj(interp, objv[1], &fnum);
-   if (result != TCL_OK) {
-      Tcl_ResetResult(interp);
-      fnum = -1;
- 
-      /* Check if second argument is a file number */
+   result = CommonParseCell(interp, objv[1], &tp, &fnum);
+   if (result != TCL_OK) return result;
+   cellname = tp->name;
 
-      result = Tcl_GetIntFromObj(interp, objv[2], &fnum);
-      if (result != TCL_OK) {
-         Tcl_ResetResult(interp);
-         fnum = -1;
-         nextp = 2;
-
-         // Alternatively to supplying "filenum", allow the use of a
-         // 2-item list containing a source filename and a class name,
-         // in which case the search for the class name will be limited
-         // to cells in the specified file.
-
-         result = Tcl_ListObjLength(interp, objv[1], &llen);
-         if (result != TCL_OK) return TCL_ERROR;
-
-         if (llen == 2 && fnum == -1) {
-            result = Tcl_ListObjIndex(interp, objv[1], 0, &tobj);
-            if (result != TCL_OK) return TCL_ERROR;
-            filename = Tcl_GetString(tobj);
-            result = Tcl_ListObjIndex(interp, objv[1], 1, &tobj);
-            if (result != TCL_OK) return TCL_ERROR;
-            cellname = Tcl_GetString(tobj);
-            tp = LookupCell(filename);
-            if (tp != NULL) {
-	       tp = LookupCellFile(cellname, tp->file);
-	       cellname = tp->name;
-            } else {
-	       Tcl_SetResult(interp, "No such file.\n", NULL);
-	       return TCL_ERROR;
-            }
-         } else {
-            filename = Tcl_GetString(objv[1]);
-	    cellname = NULL;
-         }
-      }
-      else {
-	 nextp = 3;
-	 // 1st argument must be the cellname (only)
-         cellname = Tcl_GetString(objv[1]);
-      }
-   }
-   else {	// Only file number given
-      nextp = 2;
-      cellname = NULL;
-   }
-
-   for (p = nextp; p < objc; p++) {
+   for (p = 2; p < objc; p++) {
       pattern = Tcl_GetString(objv[p]);
       numchanged += ChangeScope(fnum, cellname, pattern, NODE, GLOBAL);
    }
@@ -2013,7 +2662,7 @@ _netcmp_global(ClientData clientData,
 
 /*------------------------------------------------------*/
 /* Function name: _netcmp_ignore			*/
-/* Syntax: netgen::ignore [class <name> [<file>]]	*/
+/* Syntax: netgen::ignore [class] <valid_cellname>	*/
 /* Formerly: no such command				*/
 /* Results:						*/
 /* Side Effects:					*/
@@ -2024,166 +2673,39 @@ _netcmp_ignore(ClientData clientData,
     Tcl_Interp *interp, int objc, Tcl_Obj *CONST objv[])
 {
    char *options[] = {
-      "class", NULL
+      "class", "shorted", NULL
    };
    enum OptionIdx {
-      CLASS_IDX
+      CLASS_IDX, SHORTED_IDX
    };
    int result, index;
    int file = -1;
+   struct nlist *np;
    char *name = NULL, *name2 = NULL;
 
    if (objc >= 3) {
       if (Tcl_GetIndexFromObj(interp, objv[1], (CONST84 char **)options,
-		"option", 0, &index) != TCL_OK) {
-         return TCL_ERROR;
+		"option", 0, &index) == TCL_OK) {
+	 objc--;
+	 objv++;
       }
-      name = Tcl_GetString(objv[2]);
-
-      if (objc == 4) {
-	 result = Tcl_GetIntFromObj(interp, objv[3], &file);
-	 if (result != TCL_OK) return result;
-      }
+      result = CommonParseCell(interp, objv[1], &np, &file);
+      if (result != TCL_OK) return result;
+      name = np->name;
    }
    else {
-      Tcl_WrongNumArgs(interp, 1, objv, "?class? name");
+      Tcl_WrongNumArgs(interp, 1, objv, "[class] valid_cellname");
       return TCL_ERROR;
    }
-
-   switch(index) {
+   switch (index) {
       case CLASS_IDX:
-	 IgnoreClass(name, file);
+         IgnoreClass(name, file, IGNORE_CLASS);
+	 break;
+      case SHORTED_IDX:
+         IgnoreClass(name, file, IGNORE_SHORTED);
 	 break;
    }
    return TCL_OK;
-}
-
-/*------------------------------------------------------*/
-/* Function name: GetNamesAndFiles			*/
-/* Helper function for _netcmp_equate, to parse the	*/
-/* input for cell and filename pairs, either as		*/
-/* separate arguments or as a list of two items.	*/
-/*------------------------------------------------------*/
-
-int
-GetNamesAndFiles(Tcl_Interp *interp, Tcl_Obj *CONST objv[], int objc,
-	char **name1, char **name2, int *file1, int *file2)
-{
-    int result, llen;
-    int fnum1, fnum2;
-    char *fname1, *fname2;
-    int argnext;
-    struct nlist *tp;
-    Tcl_Obj *tobj;
-
-    /* Is 1st argument a list */
-    argnext = 0;
-
-    result = Tcl_ListObjLength(interp, objv[argnext], &llen);
-    if (result != TCL_OK) return result;
-
-    if (llen == 1) {
-	*name1 = Tcl_GetString(objv[argnext]);
-	argnext++;
-
-	/* Is 2nd argment a filename or number? */
-	result = Tcl_GetIntFromObj(interp, objv[argnext], &fnum1);
-	if (result != TCL_OK) {
-	    Tcl_ResetResult(interp);
-	    fnum1 = -1;
-	    fname1 = Tcl_GetString(objv[argnext]);
-	    /* Input filenames are unique, so don't need LookupCellFile */
-	    tp = LookupCell(fname1);
-	    if (tp == NULL) {
-		Printf("File %s not loaded.\n", fname1);
-		return TCL_ERROR;
-	    }
-	    else fnum1 = tp->file;
-	}
-    }
-    else if (llen == 2) {
-	// List of 2 arguments, either name and file number or
-	// name and filename.
-
-	result = Tcl_ListObjIndex(interp, objv[argnext], 0, &tobj);
-	if (result != TCL_OK) return result;
-	*name1 = Tcl_GetString(tobj);
-
-	result = Tcl_ListObjIndex(interp, objv[argnext], 1, &tobj);
-	if (result != TCL_OK) return result;
-	result = Tcl_GetIntFromObj(interp, tobj, &fnum1);
-	if (result != TCL_OK) {
-	    Tcl_ResetResult(interp);
-	    fnum1 = -1;
-	    fname1 = Tcl_GetString(tobj);
-	    /* Input filenames are unique, so don't need LookupCellFile */
-	    tp = LookupCell(fname1);
-	    if (tp == NULL) {
-		Printf("File %s not loaded.\n", fname1);
-		return TCL_ERROR;
-	    }
-	    else fnum1 = tp->file;
-	}
-    }
-    else {
-	Tcl_WrongNumArgs(interp, 0, objv, "?name file?");
-	return TCL_ERROR;
-    }
-
-    // Move on to second set of names/files
-    argnext++;
-
-    result = Tcl_ListObjLength(interp, objv[argnext], &llen);
-    if (result != TCL_OK) return result;
-
-    if (llen == 1) {
-	*name2 = Tcl_GetString(objv[argnext]);
-	argnext++;
-
-	/* Is 2nd argment a filename or number? */
-	result = Tcl_GetIntFromObj(interp, objv[argnext], &fnum2);
-	if (result != TCL_OK) {
-	    Tcl_ResetResult(interp);
-	    fnum2 = -1;
-	    fname2 = Tcl_GetString(objv[argnext]);
-	    /* Input filenames are unique, so don't need LookupCellFile */
-	    tp = LookupCell(fname2);
-	    if (tp == NULL) {
-		Printf("File %s not loaded.\n", fname2);
-		return TCL_ERROR;
-	    }
-	    else fnum2 = tp->file;
-	}
-    }
-    else if (llen == 2) {
-	// List of 2 arguments, either name and file number or
-	// name and filename.
-
-	result = Tcl_ListObjIndex(interp, objv[argnext], 0, &tobj);
-	if (result != TCL_OK) return result;
-	*name2 = Tcl_GetString(tobj);
-
-	result = Tcl_ListObjIndex(interp, objv[argnext], 1, &tobj);
-	if (result != TCL_OK) return result;
-	result = Tcl_GetIntFromObj(interp, tobj, &fnum1);
-	if (result != TCL_OK) {
-	    Tcl_ResetResult(interp);
-	    fnum2 = -1;
-	    fname2 = Tcl_GetString(tobj);
-	    /* Input filenames are unique, so don't need LookupCellFile */
-	    tp = LookupCell(fname2);
-	    if (tp == NULL) {
-		Printf("File %s not loaded.\n", fname2);
-		return TCL_ERROR;
-	    }
-	    else fnum2 = tp->file;
-	}
-    }
-
-    *file1 = fnum1;
-    *file2 = fnum2;
-
-    return TCL_OK;
 }
 
 /*------------------------------------------------------*/
@@ -2193,11 +2715,6 @@ GetNamesAndFiles(Tcl_Interp *interp, Tcl_Obj *CONST objv[], int objc,
 /* Results:						*/
 /* Side Effects:					*/
 /*------------------------------------------------------*/
-
-// FIXME:  MatchPins() requires that Circuit1, Circuit2 have
-// been compared, so it is not really possible to give the
-// routine two cells to match pins for.  Currently any cell
-// names passed to "equate pins" are ignored.
 
 int
 _netcmp_equate(ClientData clientData,
@@ -2210,26 +2727,135 @@ _netcmp_equate(ClientData clientData,
       NODE_IDX, ELEM_IDX, CLASS_IDX, PINS_IDX
    };
    int result, index;
-   char *name1 = NULL, *name2 = NULL;
+   char *name1 = NULL, *name2 = NULL, *optstart;
+   struct nlist *tp1, *tp2, *SaveC1, *SaveC2;
+   struct objlist *ob1, *ob2;
+   int file1, file2;
+   int i, l1, l2, ltest, lent, dolist = 0;
+   Tcl_Obj *tobj1, *tobj2, *tobj3;
 
-   if (objc == 3) {
-      index = NODE_IDX;
-      name1 = Tcl_GetString(objv[1]);
-      name2 = Tcl_GetString(objv[2]);
+   if (objc > 1) {
+      optstart = Tcl_GetString(objv[1]);
+      if (*optstart == '-') optstart++;
+      if (!strcmp(optstart, "list")) {
+	 dolist = 1;
+	 objv++;
+	 objc--;
+      }
    }
-   else if (objc == 2 || objc == 4) {
+
+   if ((objc != 2) && (objc != 4) && (objc != 6)) {
+      Tcl_WrongNumArgs(interp, 1, objv, "?nodes|elements|classes|pins? name1 name2");
+      return TCL_ERROR;
+   }
+   else {
       if (Tcl_GetIndexFromObj(interp, objv[1], (CONST84 char **)options,
 		"option", 0, &index) != TCL_OK) {
          return TCL_ERROR;
       }
-      if (objc == 4) {
-	 name1 = Tcl_GetString(objv[2]);
-	 name2 = Tcl_GetString(objv[3]);
+   }
+
+   /* Something is going on here. . . */
+   if (index > PINS_IDX) index = PINS_IDX;
+
+   /* 4-argument form only available for "equate classes", or for other	*/
+   /* options if Circuit1 and Circuit2 have been declared.		*/
+
+   if ((objc == 2) && (index == PINS_IDX)) {
+      if (Circuit1 == NULL || Circuit2 == NULL) {
+	 Tcl_SetResult(interp, "Circuits not being compared, must specify netlists.",
+			NULL);
+	 return TCL_ERROR;
       }
-      else if (index != PINS_IDX) {
-         Tcl_WrongNumArgs(interp, 1, objv, "?nodes|elements|classes|pins? name1 name2");
-         return TCL_ERROR;
+      tp1 = Circuit1;
+      file1 = Circuit1->file;
+      tp2 = Circuit2;
+      file2 = Circuit2->file;
+
+      name1 = tp1->name;
+      name2 = tp2->name;
+   }
+   else if ((objc == 4) && (index != CLASS_IDX) && (index != PINS_IDX)) {
+      if (Circuit1 == NULL || Circuit2 == NULL) {
+	 Tcl_SetResult(interp, "Circuits not being compared, must specify netlists.",
+			NULL);
+	 return TCL_ERROR;
       }
+      tp1 = Circuit1;
+      file1 = Circuit1->file;
+      tp2 = Circuit2;
+      file2 = Circuit2->file;
+
+      name1 = Tcl_GetString(objv[2]);
+      name2 = Tcl_GetString(objv[3]);
+   }
+
+   else if ((objc == 4) && ((index == CLASS_IDX) || (index == PINS_IDX))) {
+      result = CommonParseCell(interp, objv[2], &tp1, &file1);
+      if (result != TCL_OK) {
+	 if (index == CLASS_IDX) {
+	    Fprintf(stdout, "Cell to equate does not exist.\n");
+	    Tcl_SetObjResult(interp, Tcl_NewBooleanObj(0));
+	    return result;
+	 }
+	 Tcl_SetResult(interp, "No such object.", NULL);
+	 return TCL_ERROR;
+      }
+      result = CommonParseCell(interp, objv[3], &tp2, &file2);
+      if (result != TCL_OK) {
+	 if (index == CLASS_IDX) {
+	    Fprintf(stdout, "Cell to equate does not exist.\n");
+	    Tcl_SetObjResult(interp, Tcl_NewBooleanObj(0));
+	    return result;
+	 }
+	 Tcl_SetResult(interp, "No such object.", NULL);
+	 return TCL_ERROR;
+      }
+      if (file1 == file2) {
+	 if (index == CLASS_IDX) {
+	    Fprintf(stdout, "Cells to equate are in the same netlist.\n");
+	    Tcl_SetObjResult(interp, Tcl_NewBooleanObj(0));
+	    return TCL_ERROR;
+	 }
+	 Tcl_SetResult(interp, "Objects in the same netlist cannot be equated.",
+				NULL);
+	 return TCL_ERROR;
+      } 
+      name1 = tp1->name;
+      name2 = tp2->name;
+   }
+
+   else if (objc == 6) {
+      result = CommonParseCell(interp, objv[2], &tp1, &file1);
+      if (result != TCL_OK) {
+	 if (index == CLASS_IDX) {
+	    Fprintf(stdout, "Cell to equate does not exist.\n");
+	    Tcl_SetObjResult(interp, Tcl_NewBooleanObj(0));
+	 }
+	 return result;
+      }
+      result = CommonParseCell(interp, objv[4], &tp2, &file2);
+      if (result != TCL_OK) {
+	 if (index == CLASS_IDX) {
+	     Fprintf(stdout, "Cell to equate does not exist.\n");
+	     Tcl_SetObjResult(interp, Tcl_NewBooleanObj(0));
+	 }
+	 return result;
+      }
+
+      if (file1 == file2) {
+	 if (index == CLASS_IDX) {
+	    Tcl_ResetResult(interp);
+	    Fprintf(stdout, "Cells to equate are in the same netlist.\n");
+	    Tcl_SetObjResult(interp, Tcl_NewBooleanObj(0));
+	    return TCL_ERROR;
+	 }
+	 Tcl_SetResult(interp, "Cannot equate within the same netlist!\n",
+			NULL);
+	 return TCL_ERROR;
+      } 
+      name1 = Tcl_GetString(objv[3]);
+      name2 = Tcl_GetString(objv[5]);
    }
    else {
       Tcl_WrongNumArgs(interp, 1, objv, "?nodes|elements|classes|pins? name1 name2");
@@ -2239,56 +2865,283 @@ _netcmp_equate(ClientData clientData,
    switch(index) {
       case NODE_IDX:
 	 if (NodeClasses == NULL) {
-	    Printf("Cell has no nodes.\n");
+	    Fprintf(stderr, "Cell has no nodes.\n");
 	    Tcl_SetObjResult(interp, Tcl_NewBooleanObj(0));
 	    return TCL_OK;
 	 }
-	 if (EquivalenceNodes(name1, name2)) {
-	    Printf("Nodes %s and %s are equivalent.\n", name1, name2);
+	 if (EquivalenceNodes(name1, file1, name2, file2)) {
+	    Fprintf(stdout, "Nodes %s and %s are equivalent.\n", name1, name2);
 	    Tcl_SetObjResult(interp, Tcl_NewBooleanObj(1));
 	 }
 	 else {
-	    Printf("Unable to equate nodes %s and %s.\n",name1, name2);
+	    Fprintf(stderr, "Unable to equate nodes %s and %s.\n",name1, name2);
 	    Tcl_SetObjResult(interp, Tcl_NewBooleanObj(0));
 	 }
 	 break;
+
       case ELEM_IDX:
 	 if (ElementClasses == NULL) {
-	    Printf("Cell has no elements.\n");
+	    if (CurrentCell == NULL)
+		Fprintf(stderr, "Equate elements:  no current cell.\n");
+	    Fprintf(stderr, "Equate elements:  cell %s and/or %s has no elements.\n",
+			name1, name2);
 	    Tcl_SetObjResult(interp, Tcl_NewBooleanObj(0));
 	    return TCL_OK;
 	 }
-	 if (EquivalenceElements(name1, name2)) {
-	    Printf("Elements %s and %s are equivalent.\n", name1, name2);
+	 if (EquivalenceElements(name1, file1, name2, file2)) {
+	    Fprintf(stdout, "Elements %s and %s are equivalent.\n", name1, name2);
 	    Tcl_SetObjResult(interp, Tcl_NewBooleanObj(1));
 	 }
 	 else {
-	    Printf("Unable to equate elements %s and %s.\n",name1, name2);
+	    Fprintf(stderr, "Unable to equate elements %s and %s.\n",name1, name2);
 	    Tcl_SetObjResult(interp, Tcl_NewBooleanObj(0));
 	 }
 	 break;
-      case CLASS_IDX:
-	 if (EquivalenceClasses(name1, -1, name2, -1)) {
-	    Printf("Device classes %s and %s are equivalent.\n", name1, name2);
-	    Tcl_SetObjResult(interp, Tcl_NewBooleanObj(1));
-	 }
-	 else {
-	    Printf("Unable to equate device classes %s and %s.\n",name1, name2);
-	    Tcl_SetObjResult(interp, Tcl_NewBooleanObj(0));
-	 }
-	 break;
+
       case PINS_IDX:
-	 if (ElementClasses == NULL) {
-	    Printf("Cell has no elements.\n");
+	 if ((ElementClasses == NULL) && (auto_blackbox == FALSE)) {
+	    if (CurrentCell == NULL)
+		Fprintf(stderr, "Equate elements:  no current cell.\n");
+	    Fprintf(stderr, "Equate pins:  cell %s and/or %s has no elements.\n",
+			name1, name2);
 	    Tcl_SetObjResult(interp, Tcl_NewBooleanObj(0));
 	    return TCL_OK;
 	 }
-	 if (MatchPins()) {
-	    Printf("Cell pin lists are equivalent.\n");
+	 else if (ElementClasses == NULL) {
+	    /* This has been called outside of a netlist compare,	*/
+	    /* probably to force name matching of pins on black-box	*/
+	    /* devices.  But MatchPins only works if tp1 == Circuit1	*/
+	    /* and tp2 == Circuit2, so preserve these values and 	*/
+	    /* recover afterward (what a hack).				*/
+	    SaveC1 = Circuit1;
+	    SaveC2 = Circuit2;
+	    Circuit1 = tp1;
+	    Circuit2 = tp2;
+	 }
+
+	 // Check for and remove duplicate pins.  Normally this is called
+	 // from "compare", but since "equate pins" may be called outside
+	 // of and before "compare", pin uniqueness needs to be ensured.
+
+	 UniquePins(tp1->name, tp1->file);
+	 UniquePins(tp2->name, tp2->file);
+
+	 result = MatchPins(tp1, tp2, dolist);
+	 if (result == 2) {
+	    Fprintf(stdout, "Cells have no pins;  pin matching not needed.\n");
+	 }
+	 else if (result > 0) {
+	    Fprintf(stdout, "Cell pin lists are equivalent.\n");
+	 }
+	 else {
+	    Fprintf(stdout, "Cell pin lists for %s and %s altered to match.\n",
+			name1, name2);
+	 }
+	 Tcl_SetObjResult(interp, Tcl_NewIntObj(result));
+	 if (ElementClasses == NULL) {
+	    /* Recover temporarily set global variables (see above) */
+	    Circuit1 = SaveC1;
+	    Circuit2 = SaveC2;
+	 }
+	 break;
+
+      case CLASS_IDX:
+
+	 if (objc == 6) {
+
+	    /* Apply additional matching of pins */
+	    /* Objects must be CLASS_MODULE or CLASS_SUBCKT */
+
+	    if (tp1->class != CLASS_MODULE && tp1->class != CLASS_SUBCKT) {
+	       Tcl_SetResult(interp, "Device class is not black box"
+			" or subcircuit!", NULL);
+	       return TCL_ERROR;
+	    }
+	    if (tp2->class != tp1->class) {
+	       Tcl_SetResult(interp, "Device classes are different,"
+			" cannot match pins!", NULL);
+	       return TCL_ERROR;
+	    }
+
+	    /* Count the list items, and the number of ports in each cell */
+	    result = Tcl_ListObjLength(interp, objv[3], &l1);
+	    if (result != TCL_OK) return TCL_ERROR;
+	    result = Tcl_ListObjLength(interp, objv[5], &l2);
+	    if (result != TCL_OK) return TCL_ERROR;
+	    if (l1 != l2) {
+	       Tcl_SetResult(interp, "Pin lists are different length,"
+			" cannot match pins!", NULL);
+	       return TCL_ERROR;
+	    }
+	    ltest = 0;
+	    for (ob1 = tp1->cell; ob1 != NULL; ob1 = ob1->next) {
+	       if (ob1->type == PORT) ltest++;
+	    } 
+	    if (ltest != l1) {
+	       Tcl_SetResult(interp, "List length does not match "
+			" number of pins in cell.", NULL);
+	       return TCL_ERROR;
+	    }
+	    ltest = 0;
+	    for (ob2 = tp2->cell; ob2 != NULL; ob2 = ob2->next) {
+	       if (ob2->type == PORT) ltest++;
+	    } 
+	    if (ltest != l2) {
+	       Tcl_SetResult(interp, "List length does not match "
+			" number of pins in cell.", NULL);
+	       return TCL_ERROR;
+	    }
+
+	    /* 1st pin list:  Check that all list items have 1 or 2	*/
+	    /* entries, and that all of them have the same number	*/
+
+	    result = Tcl_ListObjIndex(interp, objv[3], 0, &tobj1);
+	    if (result != TCL_OK) return result;
+	    result = Tcl_ListObjLength(interp, tobj1, &lent);
+	    if (result != TCL_OK) return result;
+	    if (lent > 2) {
+		Tcl_SetResult(interp, "All list items must have one"
+			" or two entries.", NULL);
+		return TCL_ERROR;
+	    }
+
+	    for (i = 1; i < l1; i++) {
+		result = Tcl_ListObjIndex(interp, objv[3], i, &tobj1);
+		if (result != TCL_OK) return result;
+		result = Tcl_ListObjLength(interp, tobj1, &ltest);
+		if (result != TCL_OK) return result;
+		if (ltest != lent) {
+		    Tcl_SetResult(interp, "All list items must have the"
+				" same number of entries.", NULL);
+		    return TCL_ERROR;
+		}
+	    }
+
+	    /* If the first pin is a list of 2, then all items	*/
+	    /* must be lists of two.  If the cell is a		*/
+	    /* placeholder, then match the pin number against	*/
+	    /* the 2nd list item, and rename the pin.  		*/
+
+	    if (lent == 2) {
+		for (i = 0; i < l1; i++) {
+		    result = Tcl_ListObjIndex(interp, objv[3], i, &tobj1);
+		    result = Tcl_ListObjIndex(interp, tobj1, 0, &tobj2);
+		    if (result != TCL_OK) return result;
+		    result = Tcl_ListObjIndex(interp, tobj1, 1, &tobj3);
+		    if (result != TCL_OK) return result;
+
+		    for (ob1 = tp1->cell; ob1 != NULL; ob1 = ob1->next) {
+			if (ob1->type == PORT) {
+			    if ((*matchfunc)(ob1->name, Tcl_GetString(tobj3))) {
+				FREE(ob1->name);
+				ob1->name = strsave(Tcl_GetString(tobj2));
+				Tcl_GetIntFromObj(interp, tobj3, &ob1->model.port);
+				break;
+			    }
+			}
+		    }
+		}
+	    }
+
+	    /* If the first pin is a list of 1, then all items	*/
+	    /* must be single items.  If the cell is a		*/
+	    /* placeholder, then flag an error;  relying on	*/
+	    /* numerical order would be ambiguous.		*/
+
+	    else {	/* lent == 1 */
+		if (tp1->flags & CELL_PLACEHOLDER) {
+		    Tcl_SetResult(interp, "No pin order information "
+				" for the cell.", NULL);
+		    return TCL_ERROR;
+		}
+		/* else nothing to do here. . . need to parse	*/
+		/* the second list before we can do anything.	*/
+	    }
+
+	    /* 2st pin list:  Check that all list items have 1 or 2	*/
+	    /* entries, and that all of them have the same number	*/
+
+	    result = Tcl_ListObjIndex(interp, objv[5], 0, &tobj2);
+	    if (result != TCL_OK) return result;
+	    result = Tcl_ListObjLength(interp, tobj2, &lent);
+	    if (result != TCL_OK) return result;
+	    if (lent > 2) {
+		Tcl_SetResult(interp, "All list items must have one"
+			" or two entries.", NULL);
+		return TCL_ERROR;
+	    }
+
+	    for (i = 1; i < l2; i++) {
+		result = Tcl_ListObjIndex(interp, objv[5], i, &tobj2);
+		if (result != TCL_OK) return result;
+		result = Tcl_ListObjLength(interp, tobj2, &ltest);
+		if (result != TCL_OK) return result;
+		if (ltest != lent) {
+		    Tcl_SetResult(interp, "All list items must have the"
+				" same number of entries.", NULL);
+		    return TCL_ERROR;
+		}
+	    }
+
+	    /* Repeat for the 2nd cell:  If the first pin is a	*/
+	    /* list of 2, then all items must be lists of two.  */
+	    /* If the cell is a	placeholder, then match the pin	*/
+	    /* number against the 2nd list item, and rename the	*/
+	    /* pin.  						*/
+
+	    if (lent == 2) {
+		for (i = 0; i < l2; i++) {
+		    result = Tcl_ListObjIndex(interp, objv[5], i, &tobj1);
+		    result = Tcl_ListObjIndex(interp, tobj1, 0, &tobj2);
+		    if (result != TCL_OK) return result;
+		    result = Tcl_ListObjIndex(interp, tobj1, 1, &tobj3);
+		    if (result != TCL_OK) return result;
+
+		    for (ob2 = tp2->cell; ob2 != NULL; ob2 = ob2->next) {
+			if (ob2->type == PORT) {
+			    if ((*matchfunc)(ob2->name, Tcl_GetString(tobj3))) {
+				FREE(ob2->name);
+				ob2->name = strsave(Tcl_GetString(tobj2));
+				Tcl_GetIntFromObj(interp, tobj3, &ob2->model.port);
+				break;
+			    }
+			}
+		    }
+		}
+	    }
+
+	    /* On the 2nd cell, if the first pin is a list of	*/
+	    /* 1, and the cell is a placeholder, then we have	*/
+	    /* no idea how to order the pins and must flag an	*/
+	    /* error.						*/
+
+	    else {	/* lent == 1 */
+		if (tp2->flags & CELL_PLACEHOLDER) {
+		    Tcl_SetResult(interp, "No pin order information "
+				" for the cell.", NULL);
+		    return TCL_ERROR;
+		}
+	    }
+
+	    /* Now that all pins are assigned by name, reorder	*/
+	    /* the pin lists of the 2nd cell to match the	*/
+	    /* order of the 1st.				*/
+
+	    /* Reorder the pin lists of instances of the 2nd	*/
+	    /* cell to match the order of the 1st.		*/
+
+	    // pindata.cell2 = tp2;
+	    // RecurseCellHashTable2(pinorder, (void *)(&pindata));
+	 }
+
+	 if (EquivalenceClasses(tp1->name, file1, tp2->name, file2)) {
+	    Fprintf(stdout, "Device classes %s and %s are equivalent.\n",
+			tp1->name, tp2->name);
 	    Tcl_SetObjResult(interp, Tcl_NewBooleanObj(1));
 	 }
 	 else {
-	    Printf("Cell pin lists cannot be made equivalent.\n");
+	    Fprintf(stderr, "Unable to equate device classes %s and %s.\n",
+			tp1->name, tp2->name);
 	    Tcl_SetObjResult(interp, Tcl_NewBooleanObj(0));
 	 }
 	 break;
@@ -2297,14 +3150,462 @@ _netcmp_equate(ClientData clientData,
 }
 
 /*------------------------------------------------------*/
-/* Function name: _netcmp_permute			*/
-/* Syntax: netgen::permute				*/
-/*	   netgen::permute permute_class		*/
-/*	   netgen::permute cell pin1 pin2		*/
-/* Formerly: t						*/
+/* Function name: _netcmp_property			*/
+/* Syntax: netgen::property <device>|<model> [<option>	*/
+/*	 <property_key> [...]]				*/
+/* Where <option> is one of:				*/
+/*	add	  --- add new property			*/
+/*	remove	  --- delete existing property		*/
+/*	tolerance --- set property tolerance		*/
+/*	merge	  --- set property merge behavior	*/
+/* or							*/
+/*	netgen::property default			*/
+/* or							*/
+/*	netgen::property <device>|<model> <option>	*/
+/*		yes|no					*/
+/* Where <option> is one of:				*/
+/*     serial	--- allow/prohibit serial combination	*/
+/*     parallel --- allow/prohibit parallel combination	*/
+/* or							*/
+/*	netgen::property parallel none			*/
+/*		--- prohibit parallel combinations by	*/
+/*		    default.				*/
+/*							*/
+/* Formerly: (none)					*/
 /* Results:						*/
 /* Side Effects:					*/
 /*------------------------------------------------------*/
+
+int
+_netcmp_property(ClientData clientData,
+    Tcl_Interp *interp, int objc, Tcl_Obj *CONST objv[])
+{
+    int fnum, i, llen;
+    struct nlist *tp;
+    struct property *kl, *kllast, *klnext;
+    Tcl_Obj *tobj1, *tobj2, *tobj3;
+    double dval;
+    int ival, argstart;
+
+    char *options[] = {
+	"add", "create", "remove", "delete", "tolerance", "merge", "serial",
+	"parallel", NULL
+    };
+    enum OptionIdx {
+	ADD_IDX, CREATE_IDX, REMOVE_IDX, DELETE_IDX, TOLERANCE_IDX, MERGE_IDX,
+	SERIAL_IDX, PARALLEL_IDX
+    };
+    int result, index, idx2;
+
+    char *suboptions[] = {
+	"integer", "double", "value", "string", NULL
+    };
+    enum SubOptionIdx {
+	INTEGER_IDX, DOUBLE_IDX, VALUE_IDX, STRING_IDX
+    };
+
+    char *mergeoptions[] = {
+	"none", "add", "add_critical", "par", "par_critical",
+	"parallel", "parallel_critical", "ser_critical", "ser",
+	"serial_critical", "serial", NULL
+    };
+    enum MergeOptionIdx {
+	NONE_IDX, ADD_ONLY_IDX, ADD_CRIT_IDX,
+	PAR_ONLY_IDX, PAR_CRIT_IDX, PAR2_ONLY_IDX, PAR2_CRIT_IDX,
+	SER_CRIT_IDX, SER_IDX, SER2_CRIT_IDX, SER2_IDX
+    };
+    char *yesno[] = {
+	"on", "yes", "true", "enable", "allow",
+	"off", "no", "false", "disable", "prohibit", NULL
+    };
+
+    if (objc < 2) {
+	Tcl_WrongNumArgs(interp, 1, objv, "valid_cellname ?option?");
+	return TCL_ERROR;
+    }
+
+    /* Check for special command "property default" */
+    if ((objc == 2) && (!strcmp(Tcl_GetString(objv[1]), "default"))) {
+
+	/* For each FET device, do "merge {w add_critical}" and	*/
+	/* "remove as ad ps pd".  This allows parallel devices	*/
+	/* to be added by width, and prevents attempts to	*/
+	/* compare source/drain area and perimeter.		*/
+
+	tp = FirstCell();
+	while (tp != NULL) {
+	    switch (tp->class) {
+		case CLASS_NMOS: case CLASS_PMOS: case CLASS_FET3:
+		case CLASS_NMOS4: case CLASS_PMOS4: case CLASS_FET4:
+		case CLASS_FET:
+		    PropertyMerge(tp->name, tp->file, "w", MERGE_ADD_CRIT);
+		    PropertyDelete(tp->name, tp->file, "as");
+		    PropertyDelete(tp->name, tp->file, "ad");
+		    PropertyDelete(tp->name, tp->file, "ps");
+		    PropertyDelete(tp->name, tp->file, "pd");
+		    break;
+		case CLASS_RES: case CLASS_RES3:
+		    PropertyMerge(tp->name, tp->file, "w", MERGE_ADD_CRIT);
+		    PropertyMerge(tp->name, tp->file, "l", MERGE_SER_CRIT);
+		    tp->flags |= COMB_SERIAL;
+		    break;
+		case CLASS_CAP: case CLASS_ECAP: case CLASS_CAP3:
+		    // NOTE:  No attempt to combine area, width, or length;
+		    // only value.
+		    PropertyMerge(tp->name, tp->file, "value", MERGE_ADD_CRIT);
+		    break;
+		case CLASS_INDUCTOR:
+		    PropertyMerge(tp->name, tp->file, "value", MERGE_PAR_CRIT);
+		    tp->flags |= COMB_SERIAL;
+		    break;
+	    }
+	    tp = NextCell();
+	}
+	return TCL_OK;
+    }
+    else if ((objc == 3) && (!strcmp(Tcl_GetString(objv[1]), "parallel"))) {
+	if (!strcmp(Tcl_GetString(objv[2]), "none")) {
+	    GlobalParallelNone = TRUE;
+	    SetParallelCombine(FALSE);
+	}
+	else if (!strcmp(Tcl_GetString(objv[2]), "all")) {
+	    GlobalParallelNone = FALSE;
+	    SetParallelCombine(TRUE);
+	}
+	else {
+	    Tcl_SetResult(interp, "Bad option, should be property parallel none|all",
+			NONE);
+	    return TCL_ERROR;
+	}
+	return TCL_OK;
+    }
+
+    result = CommonParseCell(interp, objv[1], &tp, &fnum);
+    if (result != TCL_OK) return result;
+
+    if (objc == 2) {
+	/* Print all properties of the cell as key/type/tolerance triplets */
+	tobj1 = Tcl_NewListObj(0, NULL);
+
+	kl = (struct property *)HashFirst(&(tp->propdict));
+	while (kl != NULL) {
+	    tobj2 = Tcl_NewListObj(0, NULL);
+
+	    tobj3 = Tcl_NewStringObj(kl->key, -1);
+	    Tcl_ListObjAppendElement(interp, tobj2, tobj3);
+
+	    if (kl->type == PROP_DOUBLE)
+		tobj3 = Tcl_NewStringObj("double", -1);
+	    else if (kl->type == PROP_VALUE)
+		tobj3 = Tcl_NewStringObj("value", -1);
+	    else if (kl->type == PROP_INTEGER)
+		tobj3 = Tcl_NewStringObj("integer", -1);
+	    else if (kl->type == PROP_EXPRESSION)
+		tobj3 = Tcl_NewStringObj("expression", -1);
+	    else
+		tobj3 = Tcl_NewStringObj("string", -1);
+	    Tcl_ListObjAppendElement(interp, tobj2, tobj3);
+
+	    if (kl->type == PROP_INTEGER)
+		tobj3 = Tcl_NewIntObj(kl->slop.ival);
+	    else
+		tobj3 = Tcl_NewDoubleObj(kl->slop.dval);
+	    Tcl_ListObjAppendElement(interp, tobj2, tobj3);
+
+	    Tcl_ListObjAppendElement(interp, tobj1, tobj2);
+
+	    kl = (struct property *)HashNext(&(tp->propdict));
+	}
+	Tcl_SetObjResult(interp, tobj1);
+    }
+    else {
+	if (Tcl_GetIndexFromObj(interp, objv[2], (CONST84 char **)options,
+		"option", 0, &index) != TCL_OK) {
+	    index = ADD_IDX;
+	    argstart = 2;
+	}
+	else
+	    argstart = 3;
+
+	switch (index) {
+	    case SERIAL_IDX:
+	    case PARALLEL_IDX:
+                if (objc == 3) {
+		    if (index == SERIAL_IDX) {
+			tobj1 = Tcl_NewBooleanObj((tp->flags & COMB_SERIAL) ? 1 : 0);
+			Tcl_SetObjResult(interp, tobj1);
+			return TCL_OK;
+		    }
+		    else {
+			tobj1 = Tcl_NewBooleanObj((tp->flags & COMB_NO_PARALLEL) ? 0 : 1);
+			Tcl_SetObjResult(interp, tobj1);
+			return TCL_OK;
+		    }
+		}
+		else if (objc == 4) {
+		    if (Tcl_GetIndexFromObj(interp, objv[3],
+				(CONST84 char **)yesno,
+				"combine", 0, &idx2) != TCL_OK) {
+		        Tcl_WrongNumArgs(interp, 3, objv, "enable|disable");
+		        return TCL_ERROR;
+                    }
+                    if (idx2 <= 4) {	/* true, enable, etc. */
+			if (index == SERIAL_IDX)
+			    tp->flags |= COMB_SERIAL;
+			else
+			    tp->flags &= ~COMB_NO_PARALLEL;
+		    }
+		    else {	/* false, disable, etc. */
+			if (index == SERIAL_IDX)
+			    tp->flags &= ~COMB_SERIAL;
+			else
+			    tp->flags |= COMB_NO_PARALLEL;
+		    }
+		}
+		else {
+		    Tcl_WrongNumArgs(interp, 2, objv, "serial|parallel enable|disable");
+		    return TCL_ERROR;
+		}
+		break;
+
+	    case ADD_IDX:
+	    case CREATE_IDX:
+		if ((objc - argstart) == 0) {
+		    Tcl_WrongNumArgs(interp, 1, objv, "property_key ...");
+		    return TCL_ERROR;
+		}
+		for (i = argstart; i < objc; i++) {
+		    result = Tcl_ListObjLength(interp, objv[i], &llen);
+		    switch (llen) {
+			case 1:
+			    /* String or double, from context, default tolerance */
+			    if (Tcl_GetDoubleFromObj(interp, objv[i], &dval)
+						!= TCL_OK) {
+				Tcl_ResetResult(interp);
+			 	PropertyString(tp->name, fnum,
+					Tcl_GetString(objv[i]),
+					(int)0, (char *)NULL);
+			    }
+			    else
+			 	PropertyDouble(tp->name, fnum,
+					Tcl_GetString(objv[i]),
+					(double)0.01, (double)0.0);
+			    break;
+
+			case 2:
+			    result = Tcl_ListObjIndex(interp, objv[i], 0, &tobj1);
+			    if (result != TCL_OK) return TCL_ERROR;
+			    result = Tcl_ListObjIndex(interp, objv[i], 1, &tobj2);
+			    if (result != TCL_OK) return TCL_ERROR;
+
+			    /* {key, type} or {key, tolerance} duplet */
+
+			    if (Tcl_GetIndexFromObj(interp, tobj2,
+					(CONST84 char **)suboptions,
+					"type", 0, &idx2) != TCL_OK) {
+				Tcl_ResetResult(interp);
+				if (Tcl_GetDoubleFromObj(interp, tobj2, &dval)
+						!= TCL_OK) {
+				    Tcl_ResetResult(interp);
+			 	    PropertyDouble(tp->name, fnum,
+						Tcl_GetString(tobj1), dval, 0.0);
+				}
+				else {
+			 	    PropertyDouble(tp->name, fnum,
+						Tcl_GetString(tobj1), dval, 0.0);
+				}
+			    }
+			    else {
+				switch (idx2) {
+				    case INTEGER_IDX:
+			 		PropertyInteger(tp->name, fnum,
+						Tcl_GetString(tobj1), 0, 0);
+					break;
+				    case DOUBLE_IDX:
+			 		PropertyDouble(tp->name, fnum,
+						Tcl_GetString(tobj1),
+						(double)0.01, 0.0);
+					break;
+				    case STRING_IDX:
+			 		PropertyString(tp->name, fnum,
+						Tcl_GetString(tobj1), 0, NULL);
+					break;
+				}
+			    }
+			    break;
+
+			case 3:
+			    result = Tcl_ListObjIndex(interp, objv[i], 0, &tobj1);
+			    if (result != TCL_OK) return TCL_ERROR;
+			    result = Tcl_ListObjIndex(interp, objv[i], 1, &tobj2);
+			    if (result != TCL_OK) return TCL_ERROR;
+			    result = Tcl_ListObjIndex(interp, objv[i], 2, &tobj3);
+			    if (result != TCL_OK) return TCL_ERROR;
+
+			    /* {key, type, tolerance} triplet */
+
+			    if (Tcl_GetIndexFromObj(interp, tobj2,
+					(CONST84 char **)suboptions,
+					"type", 0, &idx2) != TCL_OK)
+				return TCL_ERROR;
+
+			    switch (idx2) {
+				case INTEGER_IDX:
+					if (Tcl_GetIntFromObj(interp, tobj3, &ival)
+						!= TCL_OK)
+					    return TCL_ERROR;
+			 		PropertyInteger(tp->name, fnum,
+						Tcl_GetString(tobj1), ival, 0);
+					break;
+				case DOUBLE_IDX:
+					if (Tcl_GetDoubleFromObj(interp, tobj3, &dval)
+						!= TCL_OK)
+					    return TCL_ERROR;
+			 		PropertyDouble(tp->name, fnum,
+						Tcl_GetString(tobj1), dval, 0.0);
+					break;
+				case VALUE_IDX:
+					if (Tcl_GetDoubleFromObj(interp, tobj3, &dval)
+						!= TCL_OK)
+					    return TCL_ERROR;
+			 		PropertyValue(tp->name, fnum,
+						Tcl_GetString(tobj1), dval, 0.0);
+					break;
+				case STRING_IDX:
+					if (Tcl_GetIntFromObj(interp, tobj3, &ival)
+						!= TCL_OK)
+					    return TCL_ERROR;
+			 		PropertyString(tp->name, fnum,
+						Tcl_GetString(tobj1), ival, NULL);
+					break;
+			    }
+			    break;
+		    }
+		}
+		break;
+
+	    case REMOVE_IDX:
+	    case DELETE_IDX:
+		if (objc == 3) {
+		    /* "remove" without additional arguments means	*/
+		    /* delete all properties.				*/
+		    RecurseHashTable(&(tp->propdict), freeprop);
+		    HashKill(&(tp->propdict));
+		    InitializeHashTable(&(tp->propdict), OBJHASHSIZE);
+		}
+		else {
+		    for (i = 3; i < objc; i++)
+			PropertyDelete(tp->name, fnum, Tcl_GetString(objv[i]));
+		}
+		break;
+
+	    case TOLERANCE_IDX:
+		if (objc == 3) {
+		    Tcl_WrongNumArgs(interp, 1, objv, "{property_key tolerance} ...");
+		    return TCL_ERROR;
+		}
+		for (i = 3; i < objc; i++) {
+		    // Each value must be a duplet
+		    result = Tcl_ListObjLength(interp, objv[i], &llen);
+		    if ((result != TCL_OK) || (llen != 2)) {
+			Tcl_SetResult(interp, "Not a {key tolerance} pair list.",
+					NULL);
+		    }
+		    else {
+			result = Tcl_ListObjIndex(interp, objv[i], 0, &tobj1);
+			if (result != TCL_OK) return result;
+			result = Tcl_ListObjIndex(interp, objv[i], 1, &tobj2);
+			if (result != TCL_OK) return result;
+
+			result = Tcl_GetIntFromObj(interp, tobj2, &ival);
+			if (result != TCL_OK) {
+			    Tcl_ResetResult(interp);
+			    if (!strncasecmp(Tcl_GetString(tobj2), "inf", 3)) {
+				ival = 1<<30;
+				dval = 1.0E+300;
+			    }
+			    else if ((result = Tcl_GetDoubleFromObj(interp, tobj2, &dval))
+					!= TCL_OK)
+				return result;
+			}
+			PropertyTolerance(tp->name, fnum, Tcl_GetString(tobj1),
+					ival, dval);
+		    }
+		}
+		break;
+
+	    case MERGE_IDX:
+		if (objc == 3) {
+		    Tcl_WrongNumArgs(interp, 1, objv, "{property_key merge_type} ...");
+		    return TCL_ERROR;
+		}
+		for (i = 3; i < objc; i++) {
+		    // Each value must be a duplet
+		    result = Tcl_ListObjLength(interp, objv[i], &llen);
+		    if ((result != TCL_OK) || (llen != 2)) {
+			Tcl_SetResult(interp, "Not a {key merge_type} pair list.",
+					NULL);
+		    }
+		    else {
+			int mergeval;
+
+			result = Tcl_ListObjIndex(interp, objv[i], 0, &tobj1);
+			if (result != TCL_OK) return result;
+			result = Tcl_ListObjIndex(interp, objv[i], 1, &tobj2);
+			if (result != TCL_OK) return result;
+
+			result = Tcl_GetIndexFromObj(interp, tobj2,
+				(CONST84 char **)mergeoptions,
+				"merge_type", 0, &idx2);
+			if (result != TCL_OK) return result;
+
+			switch (idx2) {
+			    case NONE_IDX:
+				mergeval = MERGE_NONE;
+				break;
+			    case ADD_ONLY_IDX:
+				mergeval = MERGE_ADD;
+				break;
+			    case ADD_CRIT_IDX:
+				mergeval = MERGE_ADD_CRIT;
+				break;
+			    case PAR_ONLY_IDX:
+			    case PAR2_ONLY_IDX:
+				mergeval = MERGE_PAR;
+				break;
+			    case PAR_CRIT_IDX:
+			    case PAR2_CRIT_IDX:
+				mergeval = MERGE_PAR_CRIT;
+				break;
+			    case SER_CRIT_IDX:
+			    case SER2_CRIT_IDX:
+				mergeval = MERGE_SER_CRIT;
+				break;
+			    case SER_IDX:
+			    case SER2_IDX:
+				mergeval = MERGE_SER;
+				break;
+			}
+			PropertyMerge(tp->name, fnum, Tcl_GetString(tobj1), mergeval);
+		    }
+		}
+		break;
+	}
+    }
+    return TCL_OK;
+}
+
+/*--------------------------------------------------------------*/
+/* Function name: _netcmp_permute				*/
+/* Syntax: netgen::permute [default]				*/
+/*	   netgen::permute permute_class			*/
+/*	   netgen::permute [pins] valid_cellname pin1 pin2	*/
+/*	   netgen::permute forget valid_cellname		*/
+/*	   netgen::permute forget				*/
+/* Formerly: t							*/
+/* Results:							*/
+/* Side Effects:						*/
+/*--------------------------------------------------------------*/
 
 int
 _netcmp_permute(ClientData clientData,
@@ -2312,27 +3613,92 @@ _netcmp_permute(ClientData clientData,
 {
    char *model, *pin1, *pin2;
    char *permuteclass[] = {
-      "transistors", "resistors", "capacitors", "default", "pins",
-		"forget", NULL
+      "transistors", "resistors", "capacitors", "inductors",
+		"default", "forget", "pins", NULL
    };
    enum OptionIdx {
-      TRANS_IDX, RES_IDX, CAP_IDX, DEFLT_IDX, PINS_IDX, FORGET_IDX
+      TRANS_IDX, RES_IDX, CAP_IDX, IND_IDX, DEFLT_IDX, FORGET_IDX, PINS_IDX
    };
-   int result, index;
-   struct nlist *tp;
+   int result, index, fnum = -1;
+   struct nlist *tp = NULL;
 
-   if (objc != 1 && objc != 2 && objc != 4 && objc != 5) {
-      Tcl_WrongNumArgs(interp, 1, objv, "?cell pin1 pin2?");
+   if (objc > 5) {
+      Tcl_WrongNumArgs(interp, 1, objv, "?valid_cellname pin1 pin2?");
       return TCL_ERROR;
    }
    if (objc == 1) {
       index = DEFLT_IDX;
    }
-   else if (objc == 2) {
+   else {
       if (Tcl_GetIndexFromObj(interp, objv[1], (CONST84 char **)permuteclass,
-		"permute class", 0, &index) != TCL_OK)
-         return TCL_ERROR;
+		"permute class", 0, &index) != TCL_OK) {
+	    if (objc != 4) {
+		Tcl_WrongNumArgs(interp, 1, objv, "?valid_cellname pin1 pin2?");
+		return TCL_ERROR;
+	    }
+	    result = CommonParseCell(interp, objv[1], &tp, &fnum);
+	    if (result != TCL_OK) {
+		Fprintf(stdout, "No such device \"%s\".\n",
+			Tcl_GetString(objv[1]));
+		return result;
+	    }
+	    index = PINS_IDX;
+	    pin1 = Tcl_GetString(objv[2]);
+	    pin2 = Tcl_GetString(objv[3]);
+      }
+      else if (index == PINS_IDX) {
+	 if (objc != 5) {
+	    Tcl_WrongNumArgs(interp, 1, objv, "pins ?valid_cellname pin1 pin2?");
+	    return TCL_ERROR;
+	 }
+	 result = CommonParseCell(interp, objv[2], &tp, &fnum);
+	 if (result != TCL_OK) {
+	     Fprintf(stdout, "No such device \"%s\".\n",
+			Tcl_GetString(objv[2]));
+	     return result;
+	 }
+	 pin1 = Tcl_GetString(objv[3]);
+	 pin2 = Tcl_GetString(objv[4]);
+      }
+      else if (index == FORGET_IDX) {
+	 if (objc < 3) {
+	    /* General purpose permute forget */
+	    tp = FirstCell();
+	    while (tp != NULL) {
+	       PermuteForget(tp->name, tp->file, NULL, NULL);
+	       tp = NextCell();
+	    }
+	    return TCL_OK;
+	 }
+	 else {
+	    /* Specific permute forget */
+	    result = CommonParseCell(interp, objv[2], &tp, &fnum);
+	    if (result != TCL_OK) {
+		Fprintf(stdout, "No such device \"%s\".\n",
+			Tcl_GetString(objv[2]));
+		return result;
+	    }
+	    if (objc == 5) {
+	       pin1 = Tcl_GetString(objv[3]);
+	       pin2 = Tcl_GetString(objv[4]);
+	       if (PermuteForget(tp->name, fnum, pin1, pin2))
+	          Fprintf(stdout, "Model %s pin %s != %s\n", tp->name, pin1, pin2);
+	       else
+	          Fprintf(stderr, "Unable to reset model %s pin permutation %s, %s.\n",
+			tp->name, pin1, pin2);
+	    }
+	    else {
+	       if (PermuteForget(tp->name, fnum, NULL, NULL))
+	          Fprintf(stdout, "No permutations on circuit %s\n", tp->name);
+	       else
+	          Fprintf(stderr, "Unable to reset model %s pin permutation %s, %s.\n",
+			tp->name, pin1, pin2);
+	    }
+	    return TCL_OK;
+	 }
+      }
    }
+
    if (objc == 1 || objc == 2) {
       tp = FirstCell();
       while (tp != NULL) {
@@ -2341,60 +3707,34 @@ _netcmp_permute(ClientData clientData,
 	    case CLASS_NMOS4: case CLASS_PMOS4: case CLASS_FET4:
 	    case CLASS_FET:
 	       if (index == TRANS_IDX || index == DEFLT_IDX)
-	          PermuteSetup(tp->name, "source", "drain");
+	          PermuteSetup(tp->name, tp->file, "source", "drain");
 	       break;
 	    case CLASS_RES: case CLASS_RES3:
 	       if (index == RES_IDX || index == DEFLT_IDX)
-	          PermuteSetup(tp->name, "end_a", "end_b");
+	          PermuteSetup(tp->name, tp->file, "end_a", "end_b");
+	       break;
+	    case CLASS_INDUCTOR:
+	       if (index == IND_IDX || index == DEFLT_IDX)
+	          PermuteSetup(tp->name, tp->file, "end_a", "end_b");
 	       break;
 	    case CLASS_CAP: case CLASS_ECAP: case CLASS_CAP3:
 	       if (index == CAP_IDX)
-	          PermuteSetup(tp->name, "top", "bottom");
+	          PermuteSetup(tp->name, tp->file, "top", "bottom");
 	       break;
 	 }
 	 tp = NextCell();
       }
    }
-   else {
-      /* equivalence two pins on a given class of element */
-
-      if (Tcl_GetIndexFromObj(interp, objv[1], (CONST84 char **)permuteclass,
-		"permute class", 0, &index) != TCL_OK) {
-	 Tcl_ResetResult(interp);
-
-	 if (objc == 4) {
-	    model = Tcl_GetString(objv[1]);
-	    pin1 = Tcl_GetString(objv[2]);
-	    pin2 = Tcl_GetString(objv[3]);
-	 }
-	 else {
-	    Tcl_WrongNumArgs(interp, 1, objv, "?cell pin1 pin2?");
-	    return TCL_ERROR;
-	 }
-      }
-      else if (index == PINS_IDX) {
-	 if (objc == 5) {
-	    model = Tcl_GetString(objv[2]);
-	    pin1 = Tcl_GetString(objv[3]);
-	    pin2 = Tcl_GetString(objv[4]);
-	 }
-	 else {
-	    Tcl_WrongNumArgs(interp, 2, objv, "?cell pin1 pin2?");
-	    return TCL_ERROR;
-	 }
-      }
-      else if (index == FORGET_IDX) {
-	 if (PermuteForget(model, pin1, pin2))
-	    Printf("%s != %s\n", pin1, pin2);
-	 else
-	    Printf("Unable to reset pin permutation %s, %s.\n", pin1, pin2);
-	 return TCL_OK;
-      }
-
-      if (PermuteSetup(model, pin1, pin2))
-	 Printf("%s == %s\n", pin1, pin2);
+   else if (index == PINS_IDX) {
+      if (PermuteSetup(tp->name, fnum, pin1, pin2))
+         Fprintf(stdout, "Model %s pin %s == %s\n", tp->name, pin1, pin2);
       else
-	 Printf("Unable to permute pins %s, %s.\n", pin1, pin2);
+         Fprintf(stderr, "Unable to permute model %s pins %s, %s.\n",
+			tp->name, pin1, pin2);
+   }
+   else {
+      Tcl_WrongNumArgs(interp, 1, objv, "?valid_cellname pin1 pin2?");
+      return TCL_ERROR;
    }
    return TCL_OK;
 }
@@ -2588,7 +3928,6 @@ void tcl_vprintf(FILE *f, const char *fmt, va_list args_in)
     static char outstr[128] = "puts -nonewline std";
     char *outptr, *bigstr = NULL, *finalstr = NULL;
     int i, nchars, result, escapes = 0, limit;
-    Tcl_Interp *printinterp = (UseTkConsole) ? consoleinterp : netgeninterp;
 
     strcpy (outstr + 19, (f == stderr) ? "err \"" : "out \"");
     outptr = outstr;
@@ -2641,7 +3980,7 @@ void tcl_vprintf(FILE *f, const char *fmt, va_list args_in)
     *(outptr + 24 + nchars + escapes) = '\"';
     *(outptr + 25 + nchars + escapes) = '\0';
 
-    result = Tcl_Eval(printinterp, outptr);
+    result = Tcl_Eval(consoleinterp, outptr);
 
     if (bigstr != NULL) Tcl_Free(bigstr);
     if (finalstr != NULL) Tcl_Free(finalstr);
@@ -2730,7 +4069,7 @@ int Tclnetgen_Init(Tcl_Interp *interp)
    /* Remember the interpreter */
    netgeninterp = interp;
 
-   if (Tcl_InitStubs(interp, "8.1", 0) == NULL) return TCL_ERROR;
+   if (Tcl_InitStubs(interp, "8.5", 0) == NULL) return TCL_ERROR;
   
    for (n = 0; netgen_cmds[n].name != NULL; n++) {
       sprintf(keyword, "netgen::%s", netgen_cmds[n].name);
@@ -2751,12 +4090,12 @@ int Tclnetgen_Init(Tcl_Interp *interp)
    if (cadroot == NULL) cadroot = CAD_DIR;
    Tcl_SetVar(interp, "CAD_ROOT", cadroot, TCL_GLOBAL_ONLY);
 
-   Tcl_PkgProvide(interp, "Tclnetgen", "1.1");
+   Tcl_PkgProvide(interp, "Tclnetgen", NETGEN_VERSION);
 
    if ((consoleinterp = Tcl_GetMaster(interp)) == NULL)
       consoleinterp = interp;
-
-   Tcl_CreateObjCommand(consoleinterp, "netgen::interrupt", _tkcon_interrupt,
+   else
+      Tcl_CreateObjCommand(consoleinterp, "netgen::interrupt", _tkcon_interrupt,
 		(ClientData)NULL, (Tcl_CmdDeleteProc *)NULL);
 
    InitializeCommandLine(0, NULL);

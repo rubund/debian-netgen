@@ -25,6 +25,8 @@ the Free Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. */
 #include <ctype.h>
 
 #ifdef TCL_NETGEN
+#include <tcl.h>
+
 void tcl_stdflush(FILE *);
 void tcl_vprintf(FILE *, char *, va_list);
 
@@ -238,12 +240,16 @@ int Fwrap(FILE *f, int col)
   return(oldcol);
 }
 
+/* If "f" is NULL, then print to stdout and NOT */
+/* to the log file.				*/
+
 void Ftab(FILE *f, int col)
 {
   int i;
   int spaces;
+  FILE *locf = (f == NULL) ? stdout : f;
 
-  i = findfile(f);
+  i = findfile(locf);
   if (i == -1) {
 #ifdef TCL_NETGEN
     char *padding;
@@ -252,10 +258,16 @@ void Ftab(FILE *f, int col)
     for (i = 0; i < col - ColumnBase; i++)
       padding[i] = ' ';
     padding[i] = '\0';
-    Fprintf(f, "%s", padding);
+    if (f)
+       Fprintf(f, "%s", padding);
+    else
+       Printf("%s", padding);
 #else
     for (i = 0; i < col; i++)
-      fprintf(f, " ");
+      if (f)
+         Fprintf(f, " ");
+      else
+         Printf(" ");
 #endif
     return;
   }

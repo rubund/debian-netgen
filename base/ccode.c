@@ -45,7 +45,7 @@ void ccodeCell(char *name)
 
   /* check to see that all children have been dumped */
   for (ob = tp->cell; ob != NULL; ob = ob->next) {
-    tp2 = LookupCell(ob->model);
+    tp2 = LookupCell(ob->model.class);
     if ((tp2 != NULL) && !(tp2->dumped)) 
       ccodeCell(tp2->name);
   }
@@ -68,7 +68,7 @@ void ccodeCell(char *name)
   for (ob = tp->cell; ob != NULL; ob = ob->next) {
     if (ob->type == FIRSTPIN) {
       /* this is an instance, so print out a cell */
-      FlushString("   Cell(\"%s\"", ob->model);
+      FlushString("   Cell(\"%s\"", ob->model.class);
       ob2 = ob;
       do {
 	FlushString(", \"%s\"", NodeAlias(tp, ob2));

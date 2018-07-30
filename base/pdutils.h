@@ -48,3 +48,6 @@ extern int vprintf(char *format, va_list args);
 extern int vsprintf(char *dest, char *format, ...);
 #endif /* va_end */
 #endif /* NEED_VPRINTF */
+
+#define MAX(a,b) (((a)>(b))?(a):(b))
+#define MIN(a,b) (((a)<(b))?(a):(b))

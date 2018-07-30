@@ -75,8 +75,8 @@ void extCell(char *name, int filenum)
   /* check to see that all children have been dumped */
   ob = tp->cell;
   while (ob != NULL) {
-    if (ob->type == FIRSTPIN && ob->model) {
-       tp2 = LookupCellFile(ob->model, filenum);
+    if (ob->type == FIRSTPIN && ob->model.class) {
+       tp2 = LookupCellFile(ob->model.class, filenum);
        if ((tp2 != NULL) && !(tp2->dumped)) 
           extCell(tp2->name, filenum);
     }
@@ -96,7 +96,7 @@ void extCell(char *name, int filenum)
 
   /* run through cell's contents, defining all ports and nodes */
   for (ob = tp->cell; ob != NULL; ob = ob->next) 
-    if ((ob->type == NODE) || IsPort(ob->type)) {
+    if ((ob->type == NODE) || IsPort(ob)) {
       char *nodename;
 
       FlushString ("node \"%s\" 1 1 0 0\n", ob->name);
@@ -112,7 +112,7 @@ void extCell(char *name, int filenum)
       /* this is an instance */
       /* print out cell, but special case transistors */
       FlushString ("use %s %s 0 0 0 0 0 0\n",
-		   ob->model, ob->instance);
+		   ob->model.class, ob->instance.name);
       /* print out parameter list */
       ob2 = ob;
       do {
@@ -165,12 +165,12 @@ char *ReadExt(char *fname, int doflat, int *fnum)
   int CellDefInProgress = 0;
   int filenum;
 
-  if ((filenum = OpenParseFile(fname)) < 0) {
+  if ((filenum = OpenParseFile(fname, *fnum)) < 0) {
     char name[100];
 
     SetExtension(name, fname, EXT_EXTENSION);
-    if ((filenum = OpenParseFile(name)) < 0) {
-      Printf("No file: %s\n",name);
+    if ((filenum = OpenParseFile(name, *fnum)) < 0) {
+      Printf("Error in ext file read: No file %s\n",name);
       *fnum = filenum;
       return NULL;
     }    
@@ -183,6 +183,11 @@ char *ReadExt(char *fname, int doflat, int *fnum)
     if ((pptr = strrchr(fname, '.')) != NULL) *pptr = '\0';
   }
 
+  /* Make sure all .ext file reading is case sensitive */
+  matchfunc = match;
+  matchintfunc = matchfile;
+  hashfunc = hash;
+
   if (LookupCellFile(fname, filenum) != NULL) {
     Printf("Error:  Duplicate cell name \"%s\"!\n", fname);
     CloseParseFile();
@@ -191,16 +196,16 @@ char *ReadExt(char *fname, int doflat, int *fnum)
   }
 
   while (!EndParseFile()) {
-    SkipTok();
+    SkipTok(NULL);
 
     if (EndParseFile()) break;
-    if (nexttok[0] == '#') SkipNewLine();
-    else if (match(nexttok, "timestamp")) SkipNewLine();
-    else if (match(nexttok, "version"))  SkipNewLine();
-    else if (match(nexttok, "tech"))  SkipNewLine();
-    else if (match(nexttok, "scale"))  SkipNewLine();
-    else if (match(nexttok, "style"))  SkipNewLine();
-    else if (match(nexttok, "resistclasses"))  SkipNewLine();
+    if (nexttok[0] == '#') SkipNewLine(NULL);
+    else if (match(nexttok, "timestamp")) SkipNewLine(NULL);
+    else if (match(nexttok, "version"))  SkipNewLine(NULL);
+    else if (match(nexttok, "tech"))  SkipNewLine(NULL);
+    else if (match(nexttok, "scale"))  SkipNewLine(NULL);
+    else if (match(nexttok, "style"))  SkipNewLine(NULL);
+    else if (match(nexttok, "resistclasses"))  SkipNewLine(NULL);
     else if (match(nexttok, "node")) {
       char name[200];
 
@@ -211,122 +216,122 @@ char *ReadExt(char *fname, int doflat, int *fnum)
 	CellDef(fname, filenum);
 	CellDefInProgress = 1;
       }
-      SkipTok();
+      SkipTok(NULL);
       GetExtName(name, nexttok);
       Node(name);  	/* Ports will be determined by context */
-      SkipNewLine();
+      SkipNewLine(NULL);
     }
     else if (match(nexttok, "equiv")) {
       char name[200];
       char name2[200];
-      SkipTok();
+      SkipTok(NULL);
       GetExtName(name, nexttok);
       if (LookupObject(name,CurrentCell) == NULL) Node(name);
-      SkipTok();
+      SkipTok(NULL);
       GetExtName(name2, nexttok);
       if (LookupObject(name2,CurrentCell) == NULL) Node(name2);
       join(name, name2);
-      SkipNewLine();
+      SkipNewLine(NULL);
     }
     else if (match(nexttok, "device")) {
       char dev_name[100], dev_class[100];
       char gate[200], drain[200], source[200], subs[200];
       char inststr[64];
-      SkipTok();
+      SkipTok(NULL);
       strcpy(dev_class, nexttok);
-      SkipTok();
+      SkipTok(NULL);
       strcpy(dev_name, nexttok);
-      SkipTok(); /* x coord of gate box */
+      SkipTok(NULL); /* x coord of gate box */
       strcpy(inststr, dev_class);
       strcat(inststr, "@");
       strcat(inststr, nexttok);
-      SkipTok(); /* y coord of gate box */
+      SkipTok(NULL); /* y coord of gate box */
       strcat(inststr, ",");
       strcat(inststr, nexttok);
-      SkipTok(); /* skip coord of gate box */
-      SkipTok(); /* skip coord of gate box */
+      SkipTok(NULL); /* skip coord of gate box */
+      SkipTok(NULL); /* skip coord of gate box */
 
       /* Device-dependent parameters */
 
       if (match(dev_class, "mosfet")) {
-         SkipTok(); /* skip device length */
-         SkipTok(); /* skip device width */
-         SkipTok();
+         SkipTok(NULL); /* skip device length */
+         SkipTok(NULL); /* skip device width */
+         SkipTok(NULL);
          GetExtName(subs, nexttok);
       }
       else if (match(dev_class, "bjt")) {
-         SkipTok(); /* skip device length */
-         SkipTok(); /* skip device width */
-         SkipTok();
+         SkipTok(NULL); /* skip device length */
+         SkipTok(NULL); /* skip device width */
+         SkipTok(NULL);
          GetExtName(subs, nexttok);
       }
       else if (match(dev_class, "devcap")) {
-         SkipTok(); /* skip device length */
-         SkipTok(); /* skip device width */	/* or. . . */
+         SkipTok(NULL); /* skip device length */
+         SkipTok(NULL); /* skip device width */	/* or. . . */
       }
       else if (match(dev_class, "devres")) {
-         SkipTok(); /* skip device length */
-         SkipTok(); /* skip device width */	/* or. . . */
+         SkipTok(NULL); /* skip device length */
+         SkipTok(NULL); /* skip device width */	/* or. . . */
       }
       else if (match(dev_class, "diode")) {
-         SkipTok();
+         SkipTok(NULL);
          GetExtName(gate, nexttok);
-         SkipTok(); /* skip terminal length */
-         SkipTok(); /* skip terminal attributes */
-         SkipTok();
+         SkipTok(NULL); /* skip terminal length */
+         SkipTok(NULL); /* skip terminal attributes */
+         SkipTok(NULL);
          GetExtName(drain, nexttok);
-         SkipTok(); /* skip terminal length */
-         SkipTok(); /* skip terminal attributes */
+         SkipTok(NULL); /* skip terminal length */
+         SkipTok(NULL); /* skip terminal attributes */
       }
       else if (match(dev_class, "subckt")) {
-         SkipTok(); /* skip device length */
-         SkipTok(); /* skip device width */
-         SkipTok();
+         SkipTok(NULL); /* skip device length */
+         SkipTok(NULL); /* skip device width */
+         SkipTok(NULL);
          GetExtName(subs, nexttok);
 	 while (nexttok != NULL) {
-            SkipTok();
+            SkipTok(NULL);
             GetExtName(gate, nexttok);
-            SkipTok(); /* skip terminal length */
-            SkipTok(); /* skip terminal attributes */
+            SkipTok(NULL); /* skip terminal length */
+            SkipTok(NULL); /* skip terminal attributes */
 	 }
       }
       else if (match(dev_class, "rsubckt")) {
-         SkipTok(); /* skip device length */
-         SkipTok(); /* skip device width */
-         SkipTok();
+         SkipTok(NULL); /* skip device length */
+         SkipTok(NULL); /* skip device width */
+         SkipTok(NULL);
          GetExtName(subs, nexttok);
       }
-      SkipTokNoNewline();
-      SkipNewLine();
+      SkipTokNoNewline(NULL);
+      SkipNewLine(NULL);
     }
     else if (match(nexttok, "fet")) {	/* old-style FET record */
       char fet_class[100];
       char gate[200], drain[200], source[200], subs[200];
       char inststr[64];
-      SkipTok();
+      SkipTok(NULL);
       strcpy(fet_class, nexttok);
-      SkipTok(); /* x coord of gate box */
+      SkipTok(NULL); /* x coord of gate box */
       strcpy(inststr, fet_class);
       strcat(inststr, "@");
       strcat(inststr, nexttok);
-      SkipTok(); /* y coord of gate box */
+      SkipTok(NULL); /* y coord of gate box */
       strcat(inststr, ",");
       strcat(inststr, nexttok);
-      SkipTok(); /* skip coord of gate box */
-      SkipTok(); /* skip coord of gate box */
-      SkipTok(); /* skip gate area */
-      SkipTok(); /* skip gate perimeter */
-      SkipTok();
+      SkipTok(NULL); /* skip coord of gate box */
+      SkipTok(NULL); /* skip coord of gate box */
+      SkipTok(NULL); /* skip gate area */
+      SkipTok(NULL); /* skip gate perimeter */
+      SkipTok(NULL);
       GetExtName(subs, nexttok);
-      SkipTok();
+      SkipTok(NULL);
       GetExtName(gate, nexttok);
-      SkipTok(); /* skip terminal length */
-      SkipTok(); /* skip terminal attributes */
-      SkipTok();
+      SkipTok(NULL); /* skip terminal length */
+      SkipTok(NULL); /* skip terminal attributes */
+      SkipTok(NULL);
       GetExtName(drain, nexttok);
-      SkipTok(); /* skip terminal length */
-      SkipTok(); /* skip terminal attributes */
-      SkipTokNoNewline();
+      SkipTok(NULL); /* skip terminal length */
+      SkipTok(NULL); /* skip terminal attributes */
+      SkipTokNoNewline(NULL);
       if (nexttok == NULL) {
 	/* This gets around a problem with the magic extractor in which */
 	/* transistors having shorted source-drain are written into the */
@@ -336,7 +341,7 @@ char *ReadExt(char *fname, int doflat, int *fnum)
       }
       else
         GetExtName(source, nexttok);
-      SkipNewLine();
+      SkipNewLine(NULL);
       /* remap transistors into things we know about */
       if (match(fet_class, "nfet"))
 	  N(fname, inststr, gate, drain, source);
@@ -356,15 +361,15 @@ char *ReadExt(char *fname, int doflat, int *fnum)
     else if (match(nexttok, "cap")) {
       if (IgnoreRC) {
 	/* ignore all capacitances */
-	SkipNewLine();
+	SkipNewLine(NULL);
       }
       else {
         char ctop[200], cbot[200], cdummy[200];
-	SkipTok();
+	SkipTok(NULL);
         GetExtName(ctop, nexttok);
-	SkipTok();
+	SkipTok(NULL);
         GetExtName(cbot, nexttok);
-	SkipNewLine();	/* Skip over capacitance value */
+	SkipNewLine(NULL);	/* Skip over capacitance value */
 	Cap(fname, NULL, ctop, cbot);
       }
     }
@@ -381,29 +386,29 @@ char *ReadExt(char *fname, int doflat, int *fnum)
 	CellDefInProgress = 1;
       }
 
-      SkipTok();
+      SkipTok(NULL);
       GetExtName(name, nexttok);
       if ((basename = strrchr(name,'/')) != NULL) {
 	char tmp[200];
 	strcpy(tmp, basename+1);
 	strcpy(name, tmp);
       }
-      SkipTok();
+      SkipTok(NULL);
       GetExtName(instancename, nexttok);
       Printf("Instancing %s as %s\n", name, instancename);
       Instance(name, instancename);
       if (doflat) {
         Printf("Flattening %s in %s\n", instancename, fname);
-	flattenInstancesOf(NULL, name, filenum);
+	flattenInstancesOf(NULL, filenum, name);
       }
-      SkipNewLine();
+      SkipNewLine(NULL);
     }
     else if (match(nexttok, "merge")) {
       char name[200];
       char name2[200];
-      SkipTok();
+      SkipTok(NULL);
       GetExtName(name, nexttok);
-      SkipTok();
+      SkipTok(NULL);
       GetExtName(name2, nexttok);
       if (doflat)
 	 join(name, name2);
@@ -411,12 +416,12 @@ char *ReadExt(char *fname, int doflat, int *fnum)
 	 join(name, name2);
       else {
       }
-      SkipNewLine();
+      SkipNewLine(NULL);
     }
     else {
       Printf("Strange token in ext: '%s'\n", nexttok);
       InputParseError(stderr);
-      SkipNewLine();
+      SkipNewLine(NULL);
     }
   }
   CloseParseFile();
@@ -456,8 +461,8 @@ void simCell(char *name, int filenum)
   /* check to see that all children have been dumped */
   ob = tp->cell;
   while (ob != NULL) {
-    if (ob->type == FIRSTPIN && ob->model) {
-       tp2 = LookupCellFile(ob->model, filenum);
+    if (ob->type == FIRSTPIN && ob->model.class) {
+       tp2 = LookupCellFile(ob->model.class, filenum);
        if ((tp2 != NULL) && !(tp2->dumped) && (tp2->class == CLASS_SUBCKT)) 
           Printf("Cell must be flat before .SIM written.  Found instance: %s\n",
 		tp2->name);
@@ -482,7 +487,7 @@ void simCell(char *name, int filenum)
 
       /* this is an instance */
 
-      tp2 = LookupCellFile(ob->model, filenum);
+      tp2 = LookupCellFile(ob->model.class, filenum);
       switch (tp2->class) {
 	 case CLASS_NMOS: case CLASS_NMOS4:
 	    simclass = 'n';
@@ -492,11 +497,11 @@ void simCell(char *name, int filenum)
 	    break;	
 	 case CLASS_FET4: case CLASS_FET3: case CLASS_FET:
 	    /* take an educated guess. . . */
-	    if (tolower(ob->model[0]) == 'p')
+	    if (tolower(ob->model.class[0]) == 'p')
 	       simclass = 'p';
-	    else if (tolower(ob->model[0]) == 'n')
+	    else if (tolower(ob->model.class[0]) == 'n')
 	       simclass = 'n';
-	    else if (tolower(ob->model[strlen(ob->model) - 1]) == 'p')
+	    else if (tolower(ob->model.class[strlen(ob->model.class) - 1]) == 'p')
 	       simclass = 'p';
 	    else
 	       simclass = 'n';
@@ -537,16 +542,13 @@ void simCell(char *name, int filenum)
 	    l = 2;
 	    w = 4;
 	    if (ob2 && ob2->type == PROPERTY) {
-	       struct keylist *kl;
+	       struct property *kl;
 	       struct valuelist *vl;
-	       for (kl = tp2->proplist, vl = (struct valuelist *)ob2->instance;
-			kl != NULL && vl != NULL; kl = kl->next, vl = vl->next) {
-		  if (!strcmp(kl->key, "length"))
-		     l = 1.0e6 * vl->value.dval;	/* m -> um */
-		  else if (!strcmp(kl->key, "width"))
-		     w = 1.0e6 * vl->value.dval;	/* m -> um */
-		
-	       }
+	       kl = (struct property *)HashLookup("length", &(tp2->propdict));
+	       vl = (struct valuelist *)ob2->instance.name;
+	       l = 1.0e6 * vl[kl->idx].value.dval;	/* m -> um */
+	       kl = (struct property *)HashLookup("width", &(tp2->propdict));
+	       w = 1.0e6 * vl[kl->idx].value.dval;	/* m -> um */
 	    }
 	    FlushString(" %g %g\n", l, w);   
 	    break;
@@ -575,17 +577,14 @@ void simCell(char *name, int filenum)
 	      ob2 = ob2->next;  /* Skip dummy node on 3-terminal devices */
 
 	    if (ob2 && ob2->type == PROPERTY) {
-	       struct keylist *kl;
+	       struct property *kl;
 	       struct valuelist *vl;
-	       for (kl = tp2->proplist, vl = (struct valuelist *)ob2->instance;
-			kl != NULL && vl != NULL; kl = kl->next, vl = vl->next) {
-		  if (!strcmp(kl->key, "value")) {
-		     if (tp2->class == CLASS_CAP)
-		         v = 1.0e15 * vl->value.dval;	/* F -> fF */
-		     else if (tp2->class == CLASS_RES)
-		         v = vl->value.dval;	/* Ohms (no conversion) */
-		  }
-	       }
+	       kl = (struct property *)HashLookup("value", &(tp2->propdict));
+	       vl = (struct valuelist *)ob2->instance.name;
+	       if (tp2->class == CLASS_CAP)
+	          v = 1.0e15 * vl[kl->idx].value.dval;	/* F -> fF */
+	       else if (tp2->class == CLASS_RES)
+		  v = vl->value.dval;		/* Ohms (no conversion) */
 	    }
 	    FlushString(" %g\n", v);   
 	    break;
@@ -636,205 +635,211 @@ char *ReadSim(char *fname, int *fnum)
   int has_lumped = 0;
   char *vstr;
   struct keyvalue *kvlist = NULL;
+  struct nlist *tp;
   double simscale = 1.0;
 
-  if ((filenum = OpenParseFile(fname)) < 0) {
+  if ((filenum = OpenParseFile(fname, *fnum)) < 0) {
     char name[100];
 
     SetExtension(name, fname, SIM_EXTENSION);
-    if (OpenParseFile(name) < 0) {
-      Printf("No file: %s\n",name);
+    if (OpenParseFile(name, *fnum) < 0) {
+      Printf("Error in ext file read: No file %s\n",name);
       *fnum = filenum;
       return NULL;
     }    
   }
 
+  /* Make sure all .sim file reading is case sensitive */
+  matchfunc = match;
+  matchintfunc = matchfile;
+  hashfunc = hash;
+
   CellDef(fname, filenum);
 
   while (!EndParseFile()) {
-    SkipTok();
+    SkipTok(NULL);
 
     if (EndParseFile()) break;
     if (nexttok[0] == '|') {
-      SkipTok();		/* "units" */
+      SkipTok(NULL);		/* "units" */
       if (!strcmp(nexttok, "units:")) {
-        SkipTok();
+        SkipTok(NULL);
 	simscale = strtod(nexttok, NULL);
       }
-      SkipNewLine();
+      SkipNewLine(NULL);
     }
     else if (match(nexttok, "n")) {
       char gate[200], drain[200], source[200];
       char inststr[25], *instptr = NULL;
 
-      SkipTok();
+      SkipTok(NULL);
       GetExtName(gate, nexttok);
       if (LookupObject(gate, CurrentCell) == NULL)
 	Node(gate);   /* define the node if it does not already exist */
 
-      SkipTok();
+      SkipTok(NULL);
       GetExtName(drain, nexttok);
       if (LookupObject(drain, CurrentCell) == NULL)
 	Node(drain);   /* define the node if it does not already exist */
 
-      SkipTok();
+      SkipTok(NULL);
       GetExtName(source, nexttok);
       if (LookupObject(source, CurrentCell) == NULL)
 	Node(source);   /* define the node if it does not already exist */
 
-      SkipTokNoNewline();	/* length */
+      SkipTokNoNewline(NULL);	/* length */
       if ((nexttok != NULL) && (nexttok[0] != '\0')) {
 	vstr = ScaleStringFloatValue(&nexttok[0], simscale * 1e-8);
 	AddProperty(&kvlist, "length", vstr);
-        SkipTok();		/* width */
+        SkipTok(NULL);		/* width */
 	if ((nexttok != NULL) && (nexttok[0] != '\0')) {
 	    vstr = ScaleStringFloatValue(&nexttok[0], simscale * 1e-8);
 	    AddProperty(&kvlist, "width", vstr);
 	}
-        SkipTokNoNewline();
+        SkipTokNoNewline(NULL);
         if (nexttok != NULL) {
 	  if (StrIsInt(nexttok)) {
 	    strcpy(inststr, "n@");
 	    strcat(inststr, nexttok);
-	    SkipTok();
+	    SkipTok(NULL);
 	    strcat(inststr, ",");
 	    strcat(inststr, nexttok);
 	    instptr = inststr;
 	  }
 	}
       }
-      SkipNewLine(); /* skip any attributes */
+      SkipNewLine(NULL); /* skip any attributes */
       N(fname, instptr, gate, drain, source);
       LinkProperties("n", kvlist);
     }
     else if (match(nexttok, "p")) {
       char gate[200], drain[200], source[200];
       char inststr[25], *instptr = NULL;
-      SkipTok();
+      SkipTok(NULL);
       GetExtName(gate, nexttok);
       if (LookupObject(gate, CurrentCell) == NULL)
 	Node(gate);   /* define the node if it does not already exist */
-      SkipTok();
+      SkipTok(NULL);
       GetExtName(drain, nexttok);
       if (LookupObject(drain, CurrentCell) == NULL)
 	Node(drain);   /* define the node if it does not already exist */
-      SkipTok();
+      SkipTok(NULL);
       GetExtName(source, nexttok);
       if (LookupObject(source, CurrentCell) == NULL)
 	Node(source);   /* define the node if it does not already exist */
-      SkipTokNoNewline();	/* length */
+      SkipTokNoNewline(NULL);	/* length */
       if ((nexttok != NULL) && (nexttok[0] != '\0')) {
 	vstr = ScaleStringFloatValue(&nexttok[0], simscale * 1e-8);
 	AddProperty(&kvlist, "length", vstr);
-        SkipTok();	/* width */
+        SkipTok(NULL);	/* width */
 	if ((nexttok != NULL) && (nexttok[0] != '\0')) {
 	    vstr = ScaleStringFloatValue(&nexttok[0], simscale * 1e-8);
 	    AddProperty(&kvlist, "width", vstr);
 	}
-        SkipTokNoNewline();
+        SkipTokNoNewline(NULL);
         if (nexttok != NULL) {
 	  if (StrIsInt(nexttok)) {
 	    strcpy(inststr, "p@");
 	    strcat(inststr, nexttok);
-	    SkipTok();
+	    SkipTok(NULL);
 	    strcat(inststr, ",");
 	    strcat(inststr, nexttok);
 	    instptr = inststr;
 	  }
 	}
       }
-      SkipNewLine(); /* skip various attributes */
+      SkipNewLine(NULL); /* skip various attributes */
       P(fname, instptr, gate, drain, source);
       LinkProperties("p", kvlist);
     }
     else if (match(nexttok, "e")) {	/* 3-port capacitors (poly/poly2) */
       char gate[200], drain[200], source[200];
       char inststr[25], *instptr = NULL;
-      SkipTok();
+      SkipTok(NULL);
       GetExtName(gate, nexttok);
       if (LookupObject(gate, CurrentCell) == NULL)
 	Node(gate);   /* define the node if it does not already exist */
-      SkipTok();
+      SkipTok(NULL);
       GetExtName(drain, nexttok);
       if (LookupObject(drain, CurrentCell) == NULL)
 	Node(drain);   /* define the node if it does not already exist */
-      SkipTok();
+      SkipTok(NULL);
       GetExtName(source, nexttok);
       if (LookupObject(source, CurrentCell) == NULL)
 	Node(source);   /* define the node if it does not already exist */
-      SkipTokNoNewline();	/* skip length */
+      SkipTokNoNewline(NULL);	/* skip length */
       if (nexttok != NULL) {
-        SkipTok();	/* skip width */
-        SkipTokNoNewline();
+        SkipTok(NULL);	/* skip width */
+        SkipTokNoNewline(NULL);
         inststr[0] = '\0';
         if (nexttok != NULL) {
 	  if (StrIsInt(nexttok)) {
 	    strcpy(inststr, "e@");
 	    strcat(inststr, nexttok);
-	    SkipTok();
+	    SkipTok(NULL);
 	    strcat(inststr, ",");
 	    strcat(inststr, nexttok);
 	    instptr = inststr;
 	  }
 	}
       }
-      SkipNewLine(); /* skip various attributes */
+      SkipNewLine(NULL); /* skip various attributes */
       E(fname, instptr, gate, drain, source);
     }
     else if (match(nexttok, "b")) {		/* bipolars added by Tim 7/16/96 */
       char base[200], emitter[200], collector[200];
       char inststr[25], *instptr = NULL;
-      SkipTok();
+      SkipTok(NULL);
       GetExtName(base, nexttok);
       if (LookupObject(base, CurrentCell) == NULL)
 	Node(base);   /* define the node if it does not already exist */
-      SkipTok();
+      SkipTok(NULL);
       GetExtName(emitter, nexttok);
       if (LookupObject(emitter, CurrentCell) == NULL)
 	Node(emitter);   /* define the node if it does not already exist */
-      SkipTok();
+      SkipTok(NULL);
       GetExtName(collector, nexttok);
       if (LookupObject(collector, CurrentCell) == NULL)
 	Node(collector);   /* define the node if it does not already exist */
-      SkipTokNoNewline();	/* skip length */
+      SkipTokNoNewline(NULL);	/* skip length */
       if (nexttok != NULL) {
-        SkipTok();	/* skip width */
-        SkipTokNoNewline();
+        SkipTok(NULL);	/* skip width */
+        SkipTokNoNewline(NULL);
         if (nexttok != NULL) {
 	  if (StrIsInt(nexttok)) {
 	    strcpy(inststr, "b@");
 	    strcat(inststr, nexttok);
-	    SkipTok();
+	    SkipTok(NULL);
 	    strcat(inststr, ",");
 	    strcat(inststr, nexttok);
 	    instptr = inststr;
 	  }
 	}
       }
-      SkipNewLine(); /* skip various attributes */
+      SkipNewLine(NULL); /* skip various attributes */
       B(fname, instptr, collector, base, emitter);
     }
     else if (matchnocase(nexttok, "c")) { /* 2-port capacitors */
       if (IgnoreRC) {
 	/* ignore all capacitances */
-	SkipNewLine();
+	SkipNewLine(NULL);
       }
       else {
         char ctop[200], cbot[200], cdummy[200];
-        SkipTok();
+        SkipTok(NULL);
         GetExtName(ctop, nexttok);
         if (LookupObject(ctop, CurrentCell) == NULL)
 	  Node(ctop);   /* define the node if it does not already exist */
-        SkipTok();
+        SkipTok(NULL);
         GetExtName(cbot, nexttok);
         if (LookupObject(cbot, CurrentCell) == NULL)
 	  Node(cbot);   /* define the node if it does not already exist */
-	SkipTokNoNewline();
+	SkipTokNoNewline(NULL);
 	if (nexttok != NULL) {
 	   vstr = ScaleStringFloatValue(&nexttok[0], 1e-15);
 	   AddProperty(&kvlist, "value", vstr);
 	}
-        SkipNewLine();
+        SkipNewLine(NULL);
         Cap(fname, NULL, ctop, cbot);
 	LinkProperties("c", kvlist);
       }
@@ -842,23 +847,23 @@ char *ReadSim(char *fname, int *fnum)
     else if (match(nexttok, "r")) {	/* 2-port resistors */
       if (IgnoreRC) {
 	/* ignore all capacitances */
-	SkipNewLine();
+	SkipNewLine(NULL);
       }
       else {
         char rtop[200], rbot[200];
-        SkipTok();
+        SkipTok(NULL);
         GetExtName(rtop, nexttok);
         if (LookupObject(rtop, CurrentCell) == NULL)
 	  Node(rtop);   /* define the node if it does not already exist */
-        SkipTok();
+        SkipTok(NULL);
         GetExtName(rbot, nexttok);
         if (LookupObject(rbot, CurrentCell) == NULL)
 	  Node(rbot);   /* define the node if it does not already exist */
-	SkipTokNoNewline();
+	SkipTokNoNewline(NULL);
 	if (nexttok != NULL) {
 	   AddProperty(&kvlist, "value", &nexttok[0]);
 	}
-        SkipNewLine(); /* skip various attributes */
+        SkipNewLine(NULL); /* skip various attributes */
         Res(fname, NULL, rtop, rbot);
 	LinkProperties("r", kvlist);
       }
@@ -866,55 +871,55 @@ char *ReadSim(char *fname, int *fnum)
     else if (match(nexttok, "z")) {	/* 3-port resistors from magic */
       if (IgnoreRC) {
 	/* ignore all capacitances */
-	SkipNewLine();
+	SkipNewLine(NULL);
       }
       else {
         char rtop[200], rbot[200], rdummy[200];
 	char inststr[25], *instptr = NULL;
-        SkipTok();
+        SkipTok(NULL);
         GetExtName(rdummy, nexttok);
         if (LookupObject(rdummy, CurrentCell) == NULL)
 	  Node(rdummy);   /* define the node if it does not already exist */
-        SkipTok();
+        SkipTok(NULL);
         GetExtName(rtop, nexttok);
         if (LookupObject(rtop, CurrentCell) == NULL)
 	  Node(rtop);   /* define the node if it does not already exist */
-        SkipTok();
+        SkipTok(NULL);
         GetExtName(rbot, nexttok);
         if (LookupObject(rbot, CurrentCell) == NULL)
 	  Node(rbot);   /* define the node if it does not already exist */
-        SkipTokNoNewline();	/* skip length */
+        SkipTokNoNewline(NULL);	/* skip length */
         if (nexttok != NULL) {
-          SkipTok();	/* skip width */
-          SkipTokNoNewline();
+          SkipTok(NULL);	/* skip width */
+          SkipTokNoNewline(NULL);
           if (nexttok != NULL) {
 	    if (StrIsInt(nexttok)) {
 	      strcpy(inststr, "z@");
 	      strcat(inststr, nexttok);
-	      SkipTok();
+	      SkipTok(NULL);
 	      strcat(inststr, ",");
 	      strcat(inststr, nexttok);
 	      instptr = inststr;
 	    }
 	  }
 	}
-        SkipNewLine(); /* skip various attributes */
+        SkipNewLine(NULL); /* skip various attributes */
         Res3(fname, instptr, rdummy, rtop, rbot);
       }
     }
     else if (match(nexttok, "N")) {
       /* ignore this keyword */
-      SkipNewLine();
+      SkipNewLine(NULL);
     }
     else if (match(nexttok, "A")) {
       /* ignore this keyword */
-      SkipNewLine();
+      SkipNewLine(NULL);
     }
     else if (match(nexttok, "=")) {
       char node1[200], node2[200];
-      SkipTok();
+      SkipTok(NULL);
       GetExtName(node1, nexttok);
-      SkipTok();
+      SkipTok(NULL);
       GetExtName(node2, nexttok);
       join(node1, node2);
     }
@@ -923,17 +928,21 @@ char *ReadSim(char *fname, int *fnum)
         Printf("Ignoring lumped resistances (\"R\" records) in .sim.\n");
 	has_lumped = 1;	  /* Don't print this message more than once */
       }
-      SkipNewLine();
+      SkipNewLine(NULL);
     }
     else {
       Printf("Strange token in .sim: '%s'\n", nexttok);
       InputParseError(stderr);
-      SkipNewLine();
+      SkipNewLine(NULL);
     }
     DeleteProperties(&kvlist);
   }
   EndCell();
   CloseParseFile();
+
+  tp = LookupCellFile(fname, filenum);
+  if (tp) tp->flags |= CELL_TOP;
+
   *fnum = filenum;
   return fname;
 }

@@ -117,15 +117,6 @@
 #define memzero(ptr, len) memset(ptr, 0, len)
 #endif
 
-
-#ifndef INLINE
-#ifdef __GNUC__
-#define INLINE inline
-#else
-#define INLINE
-#endif /* __GNUC__ */
-#endif
-
 #ifdef HAVE_SYSV_STRING
 #undef NEED_STRING
 #endif
@@ -176,6 +167,13 @@ extern int open(char *path, int oflag, ...); /* HPUX has it in <sys/fcntl.h> */
   #define MALLOC(s)	malloc(s)
   #define FREE(a)	free(a)
   #define STRDUP(a)	strdup(a)
+#endif
+
+#ifndef TRUE
+#define TRUE 1
+#endif
+#ifndef FALSE
+#define FALSE 0
 #endif
 
 #endif /* _CONFIG_H */

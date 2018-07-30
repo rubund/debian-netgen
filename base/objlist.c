@@ -37,13 +37,13 @@ the Free Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. */
 #include "dbug.h"
 #include "print.h"
 #include "netfile.h"
+#include "netcmp.h"
 
 #ifdef TCL_NETGEN
 extern Tcl_Interp *netgeninterp;
 #endif
 
 struct nlist *CurrentCell = NULL;
-#define USE_TAIL_POINTER
 struct objlist *CurrentTail = NULL;
 
 /* shortcut pointer to last-placed object in list; used in netgen.c */
@@ -123,20 +123,20 @@ struct keyvalue *NewKeyValue(void)
 	return (kv);
 }
 
-struct keylist *NewProperty(void)
+struct property *NewProperty(void)
 {
-	struct keylist *kl;
+	struct property *kl;
 	
-	kl = (struct keylist *)CALLOC(1,sizeof(struct keylist));
+	kl = (struct property *)CALLOC(1,sizeof(struct property));
 	if (kl == NULL) Fprintf(stderr,"NewProperty: Core allocation error\n");
 	return (kl);
 }
 
-struct valuelist *NewPropValue(void)
+struct valuelist *NewPropValue(int entries)
 {
 	struct valuelist *vl;
 	
-	vl = (struct valuelist *)CALLOC(1,sizeof(struct valuelist));
+	vl = (struct valuelist *)CALLOC(entries, sizeof(struct valuelist));
 	if (vl == NULL) Fprintf(stderr,"NewPropValue: Core allocation error\n");
 	return (vl);
 }
@@ -184,13 +184,46 @@ int match(char *st1, char *st2)
 
 /* Case-insensitive matching */
 
+/* For case-insensitivity, the alphabet is lower-cased, but	*/
+/* also all common vector delimiters are cast to the same	*/
+/* character so that different vector notations will match.	*/
+
+static char to_lower[256] = {
+	0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+	10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+	20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
+	30, 31, 32, 33, 34, 35, 36, 37, 38, 39,
+	40, 41, 42, 43, 44, 45, 46, 47,
+	'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+	':', ';', '<', '=', '>', '?', '@',
+	'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
+	'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
+	'<', '\\', '>', '^', '_', '`',
+	'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
+	'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
+	'<', '|', '>', '~', 127,
+	0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+	10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+	20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
+	30, 31, 32, 33, 34, 35, 36, 37, 38, 39,
+	40, 41, 42, 43, 44, 45, 46, 47,
+	'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+	':', ';', '<', '=', '>', '?', '@',
+	'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
+	'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
+	'<', '\\', '>', '^', '_', '`',
+	'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
+	'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
+	'<', '|', '>', '~', 127
+};
+
 int matchnocase(char *st1, char *st2)
 {
    char *sp1 = st1;
    char *sp2 = st2;
 
    while (*sp1 != '\0' && *sp2 != '\0') {
-      if (tolower(*sp1) != tolower(*sp2)) break;
+      if (to_lower[*sp1] != to_lower[*sp2]) break;
       sp1++;
       sp2++;
    }
@@ -216,7 +249,7 @@ int matchfilenocase(char *st1, char *st2, int f1, int f2)
 
    if (f1 != f2) return 0;
    while (*sp1 != '\0' && *sp2 != '\0') {
-      if (tolower(*sp1) != tolower(*sp2)) break;
+      if (to_lower[*sp1] != to_lower[*sp2]) break;
       sp1++;
       sp2++;
    }
@@ -251,18 +284,19 @@ void PrintMemoryStats(void)
 
 
 #define CELLHASHSIZE 1000
-static struct hashlist *cell_hashtab[CELLHASHSIZE]; 
+static struct hashdict cell_dict;
 
 void InitCellHashTable(void)
 {
-	hashfunc = hash;
-	matchfunc = match;
-	InitializeHashTable(cell_hashtab, CELLHASHSIZE);
+    hashfunc = hash;
+    matchfunc = match;
+    matchintfunc = matchfile;
+    InitializeHashTable(&cell_dict, CELLHASHSIZE);
 }
 
 struct nlist *LookupCell(char *s)
 {
-  return((struct nlist *)HashLookup(s, cell_hashtab, CELLHASHSIZE));
+    return((struct nlist *)HashLookup(s, &cell_dict));
 }
 
 /* Similar hash lookup to the above, but will check if the matching	*/
@@ -274,7 +308,7 @@ struct nlist *LookupCellFile(char *s, int f)
    struct nlist *he;
 
    if (f == -1) return LookupCell(s);
-   return HashIntLookup(s, f, cell_hashtab, CELLHASHSIZE);
+   return HashIntLookup(s, f, &cell_dict);
 }
 
 struct nlist *InstallInCellHashTable(char *name, int fnum)
@@ -282,40 +316,32 @@ struct nlist *InstallInCellHashTable(char *name, int fnum)
   struct hashlist *ptr;
   struct nlist *p;
 
-  ptr = LookupCellFile(name, fnum);
-  if (ptr != NULL)
-    return((struct nlist *)(ptr->ptr));
+  p = LookupCellFile(name, fnum);
+  if (p != NULL) return(p);
 
-  /* else, it is not present, so add it to list */
+  /* It is not present, so add it to list */
+
   p = (struct nlist *)CALLOC(1, sizeof(struct nlist));
   if (p == NULL) return(NULL);
   if ((p->name = strsave(name)) == NULL) goto fail;
   p->file = fnum;
-#ifdef HASH_OBJECTS
-  if ((p->objtab = (struct hashlist **)CALLOC(OBJHASHSIZE, 
-	    sizeof(struct hashlist *))) == NULL) goto fail;
-  if ((p->insttab = (struct hashlist **)CALLOC(OBJHASHSIZE, 
-	    sizeof(struct hashlist *))) == NULL) goto fail;
-#endif
+  InitializeHashTable(&(p->objdict), OBJHASHSIZE);
+  InitializeHashTable(&(p->instdict), OBJHASHSIZE);
+  InitializeHashTable(&(p->propdict), OBJHASHSIZE);
+  p->permutes = NULL;
 
   // Hash size 0 indicates to hash function that no binning is being done
   p->classhash = (*hashfunc)(name, 0);
 
-  ptr = HashIntPtrInstall(name, fnum, p, cell_hashtab, CELLHASHSIZE);
+  ptr = HashIntPtrInstall(name, fnum, p, &cell_dict);
   if (ptr == NULL) return(NULL);
   return(p);
  fail:
   if (p->name != NULL) FREE(p->name);
-#ifdef HASH_OBJECTS
-  if (p->objtab != NULL) {
-    HashKill(p->objtab, OBJHASHSIZE);
-    FREE(p->objtab);
-  }
-  if (p->insttab != NULL) {
-    HashKill(p->insttab, OBJHASHSIZE);
-    FREE(p->insttab);
-  }
-#endif
+  HashKill(&(p->objdict));
+  HashKill(&(p->instdict));
+  RecurseHashTable(&(p->propdict), freeprop);
+  HashKill(&(p->propdict));
   FREE(p);
   return(NULL);
 }
@@ -338,12 +364,80 @@ void CellRehash(char *name, char *newname, int file)
   FREE(tp->name);
   tp->name = strsave(newname);
 
-  ptr = HashIntPtrInstall(newname, file, (void *)tp, cell_hashtab, CELLHASHSIZE);
+  ptr = HashIntPtrInstall(newname, file, (void *)tp, &cell_dict);
   if (ptr != NULL)
-     HashIntDelete(name, file, cell_hashtab, CELLHASHSIZE);
+     HashIntDelete(name, file, &cell_dict);
+
+  // Change the classhash to reflect the new name
+  tp->classhash = (*hashfunc)(newname, 0);
 }
 
 struct nlist *OldCell;
+
+int removeshorted(struct hashlist *p, int file)
+{
+   struct nlist *ptr;
+   struct objlist *ob, *lob, *nob, *tob;
+   unsigned char shorted;
+
+   ptr = (struct nlist *)(p->ptr);
+
+   if ((file != -1) && (ptr->file != file)) return 0;
+
+   lob = NULL;
+   for (ob = ptr->cell; ob != NULL;) {
+      nob = ob->next;
+      if ((ob->type == FIRSTPIN) && (ob->model.class != NULL)) {
+	 if ((*matchfunc)(ob->model.class, OldCell->name)) {
+            shorted = (unsigned char)1;
+	    for (tob = nob; tob->type > FIRSTPIN; tob = tob->next) {
+	       if (tob->node != ob->node) {
+	           shorted = (unsigned char)0;
+	           break;
+	       }
+            }
+	    if (shorted == (unsigned char)0) {
+               lob = ob;
+               ob = nob;
+	       continue;
+	    }
+	    HashDelete(ob->instance.name, &(ptr->instdict));
+	    while (1) {
+	       FreeObjectAndHash(ob, ptr);
+	       ob = nob;
+	       if (ob == NULL) break;
+	       nob = ob->next;
+	       if (ob->type != PROPERTY && ob->type <= FIRSTPIN) break;
+	    }
+	    if (lob == NULL)
+	       ptr->cell = ob;
+	    else
+	       lob->next = ob;
+	 }
+	 else {
+	    lob = ob;
+	    ob = nob;
+	 }
+      }
+      else {
+         lob = ob;
+         ob = nob;
+      }
+   }
+}
+
+/* Remove shorted instances of class "class" from the database */
+
+void RemoveShorted(char *class, int file)
+{
+   if (file == -1)
+      OldCell = LookupCell(class);
+   else
+      OldCell = LookupCellFile(class, file);
+
+   if (OldCell == NULL) return;
+   RecurseCellFileHashTable(removeshorted, file);
+}
 
 int deleteclass(struct hashlist *p, int file)
 {
@@ -352,20 +446,20 @@ int deleteclass(struct hashlist *p, int file)
 
    ptr = (struct nlist *)(p->ptr);
 
-   if ((file != -1) && (ptr->file != file)) return;
+   if ((file != -1) && (ptr->file != file)) return 0;
 
    lob = NULL;
    for (ob = ptr->cell; ob != NULL;) {
       nob = ob->next;
-      if ((ob->type == FIRSTPIN) && (ob->model != NULL)) {
-	 if ((*matchfunc)(ob->model, OldCell->name)) {
-	    HashDelete(ob->instance, ptr->insttab, OBJHASHSIZE);
+      if ((ob->type == FIRSTPIN) && (ob->model.class != NULL)) {
+	 if ((*matchfunc)(ob->model.class, OldCell->name)) {
+	    HashDelete(ob->instance.name, &(ptr->instdict));
 	    while (1) {
 	       FreeObjectAndHash(ob, ptr);
 	       ob = nob;
 	       if (ob == NULL) break;
 	       nob = ob->next;
-	       if (ob->type == FIRSTPIN) break;
+	       if (ob->type != PROPERTY && ob->type <= FIRSTPIN) break;
 	    }
 	    if (lob == NULL)
 	       ptr->cell = ob;
@@ -409,13 +503,13 @@ int renameinstances(struct hashlist *p, int file)
 
    ptr = (struct nlist *)(p->ptr);
 
-   if ((file != -1) && (ptr->file != file)) return;
+   if ((file != -1) && (ptr->file != file)) return 0;
 
    for (ob = ptr->cell; ob != NULL; ob = ob->next) {
-      if ((ob->type >= FIRSTPIN) && (ob->model != NULL)) {
-	 if ((*matchfunc)(ob->model, OldCell->name)) {
-	    FreeString(ob->model);
-	    ob->model = strsave(NewName);
+      if ((ob->type >= FIRSTPIN) && (ob->model.class != NULL)) {
+	 if ((*matchfunc)(ob->model.class, OldCell->name)) {
+	    FreeString(ob->model.class);
+	    ob->model.class = strsave(NewName);
 	 }
       }
    }
@@ -434,6 +528,32 @@ void InstanceRename(char *from, char *to, int file)
    RecurseCellFileHashTable(renameinstances, file);
 }
 
+/* Delete contents of a hashed property structure */
+
+int freeprop(struct hashlist *p)
+{
+   struct property *prop;
+
+   prop = (struct property *)(p->ptr);
+   if (prop->type == PROP_STRING)
+      if (prop->pdefault.string != NULL)
+	 FREE(prop->pdefault.string);
+   else if (prop->type == PROP_EXPRESSION) {
+      struct tokstack *stackptr, *nptr;
+      stackptr = prop->pdefault.stack;
+      while (stackptr != NULL) {
+	 nptr = stackptr->next;
+	 if (stackptr->toktype == TOK_STRING)
+	    FREE(stackptr->data.string);
+	 FREE(stackptr);
+	 stackptr = nptr;
+      }
+   }
+   FREE(prop->key);
+   FREE(prop);
+   return 1;
+}
+
 void CellDelete(char *name, int fnum)
 {
   /* delete all the contents of cell 'name', and remove 'name' from
@@ -442,7 +562,6 @@ void CellDelete(char *name, int fnum)
      is the case, the user will (quickly) define a new cell of that name.
   */
   struct objlist *ob, *obnext;
-  struct keylist *pr, *prnext;
   struct nlist *tp;
 
   tp = LookupCellFile(name, fnum);
@@ -451,32 +570,19 @@ void CellDelete(char *name, int fnum)
     return;
   }
 
-  HashIntDelete(name, fnum, cell_hashtab, CELLHASHSIZE);
+  HashIntDelete(name, fnum, &cell_dict);
   /* now make sure that we free all the fields of the nlist struct */
   if (tp->name != NULL) FREE(tp->name);
-#ifdef HASH_OBJECTS
-  if (tp->objtab != NULL) {
-    HashKill(tp->objtab, OBJHASHSIZE);
-    FREE(tp->objtab);
-  }
-  if (tp->insttab != NULL) {
-    HashKill(tp->insttab, OBJHASHSIZE);
-    FREE(tp->insttab);
-  }
-#endif
+  HashKill(&(tp->objdict));
+  HashKill(&(tp->instdict));
+  RecurseHashTable(&(tp->propdict), freeprop);
+  HashKill(&(tp->propdict));
   FreeNodeNames(tp);
   ob = tp->cell;
   while (ob != NULL) {
     obnext = ob->next;
     FreeObject (ob);
     ob = obnext;
-  }
-  pr = tp->proplist;
-  while (pr != NULL) {
-    prnext = pr->next;
-    FreeString(pr->key);
-    FREE(pr);
-    pr = prnext;
   }
 }
 
@@ -491,8 +597,11 @@ static int PrintCellHashTableElement(struct hashlist *p)
     /* only print primitive cells if Debug is enabled */
     if (Debug == 1)  Printf("Cell: %s (instanced %d times); Primitive\n",
 		       ptr->name, ptr->number);
+    else if (Debug == 3) {	/* list */
+       Tcl_AppendElement(netgeninterp, ptr->name);
+    }
   }
-  else if (Debug == 2) {	/* list only */
+  else if ((Debug == 2) || (Debug == 3)) {	/* list only */
 #ifdef TCL_NETGEN
      Tcl_AppendElement(netgeninterp, ptr->name);
 #else
@@ -508,42 +617,43 @@ static int PrintCellHashTableElement(struct hashlist *p)
 /* if full == 1, print primitive elements also	*/
 /* if full == 2, just output the cell names.	*/
 
-void PrintCellHashTable(int full, char *filename)
+void PrintCellHashTable(int full, int filenum)
 {
   int total, bins;
   int OldDebug;
 
-  if (filename != NULL) {
-     struct nlist *top;
-     top = LookupCell(filename);
-     TopFile = (top) ? top->file : (File + 1);
+  if ((filenum == -1) && (Circuit1 != NULL) && (Circuit2 != NULL)) {
+      PrintCellHashTable(full, Circuit1->file);
+      PrintCellHashTable(full, Circuit2->file);
+      return;
   }
-  else TopFile = -1;
 
-  bins  = RecurseHashTable(cell_hashtab, CELLHASHSIZE, CountHashTableBinsUsed);
-  total = RecurseHashTable(cell_hashtab, CELLHASHSIZE, CountHashTableEntries);
-  if (full != 2)
+  TopFile = filenum;
+
+  bins  = RecurseHashTable(&cell_dict, CountHashTableBinsUsed);
+  total = RecurseHashTable(&cell_dict, CountHashTableEntries);
+  if (full < 2)
      Printf("Hash table: %d of %d bins used; %d cells total (%.2f per bin)\n",
 		bins, CELLHASHSIZE, total, (bins == 0) ? 0 :
 		(float)((float)total / (float)bins));
 	
   OldDebug = Debug;
   Debug = full;
-  RecurseHashTable(cell_hashtab, CELLHASHSIZE, PrintCellHashTableElement);
+  RecurseHashTable(&cell_dict, PrintCellHashTableElement);
   Debug = OldDebug;
 #ifndef TCL_NETGEN
-  if (full == 2) Printf("\n");
+  if (full >= 2) Printf("\n");
 #endif
 }
 
 struct nlist *FirstCell(void)
 {
-  return((struct nlist *)HashFirst(cell_hashtab, CELLHASHSIZE));
+  return((struct nlist *)HashFirst(&cell_dict));
 }
 
 struct nlist *NextCell(void)
 {
-  return((struct nlist *)HashNext(cell_hashtab, CELLHASHSIZE));
+  return((struct nlist *)HashNext(&cell_dict));
 }
 
 static int ClearDumpedElement(struct hashlist *np)
@@ -557,17 +667,17 @@ static int ClearDumpedElement(struct hashlist *np)
 
 void ClearDumpedList(void)
 {
-	RecurseHashTable(cell_hashtab, CELLHASHSIZE, ClearDumpedElement);
+	RecurseHashTable(&cell_dict, ClearDumpedElement);
 }
 
 int RecurseCellHashTable(int (*foo)(struct hashlist *np))
 {
-  return RecurseHashTable(cell_hashtab, CELLHASHSIZE, foo);
+  return RecurseHashTable(&cell_dict, foo);
 }
 
 int RecurseCellFileHashTable(int (*foo)(struct hashlist *, int), int value)
 {
-  return RecurseHashTableValue(cell_hashtab, CELLHASHSIZE, foo, value);
+  return RecurseHashTableValue(&cell_dict, foo, value);
 }
 
 /* Yet another version, passing one parameter that is a pointer */
@@ -575,7 +685,7 @@ int RecurseCellFileHashTable(int (*foo)(struct hashlist *, int), int value)
 struct nlist *RecurseCellHashTable2(struct nlist *(*foo)(struct hashlist *,
 	void *), void *pointer)
 {
-  return RecurseHashTablePointer(cell_hashtab, CELLHASHSIZE, foo, pointer);
+  return RecurseHashTablePointer(&cell_dict, foo, pointer);
 }
 
 /************************** WILD-CARD STUFF *******************************/
@@ -787,8 +897,8 @@ struct objlist *ListCat(struct objlist *ls1, struct objlist *ls2)
 #else
 		tmp->name = ls1->name;
 		tmp->type = ls1->type;
-		tmp->model = ls1->model;
-		tmp->instance = ls1->instance;
+		tmp->model.class = ls1->model.class;
+		tmp->instance.name = ls1->instance.name;
 		tmp->node = ls1->node;
 		tmp->next = NULL;
 #endif
@@ -835,7 +945,7 @@ int ListLength(char *list_template)
 
 
 
-struct objlist *CopyObjList(struct objlist *oldlist)
+struct objlist *CopyObjList(struct objlist *oldlist, unsigned char doforall)
 /* copies list pointed to by oldlist, creating
    a list whose head pointer is returned */
 {
@@ -857,11 +967,12 @@ struct objlist *CopyObjList(struct objlist *oldlist)
     if (newob->type == PROPERTY)
        CopyProperties(newob, tmp);
     else {
-       if (tmp->model == NULL || IsPort(tmp->type))
-          newob->model = NULL;
+       if (tmp->model.class == NULL || IsPort(tmp))
+          newob->model.class = NULL;
        else
-          newob->model = strsave(tmp->model);
-       newob->instance = (tmp->instance) ? strsave(tmp->instance) : NULL;
+          newob->model.class = strsave(tmp->model.class);
+       newob->instance.name = (tmp->instance.name) ?
+		strsave(tmp->instance.name) : NULL;
     }
     newob->node = tmp->node;
     newob->next = NULL;
@@ -871,6 +982,13 @@ struct objlist *CopyObjList(struct objlist *oldlist)
       tail->next = newob;
     tail = newob;
     tmp = tmp->next;
+
+    // If "doforall" is 0, then only copy one object;  otherwise,
+    // copy to the end of the list.
+    if (!doforall) {
+      if ((tmp == NULL) || ((tmp->type <= FIRSTPIN) && (tmp->type != PROPERTY)))
+	 break;
+    }
   }
   return (head);
 }
@@ -885,51 +1003,13 @@ struct objlist *CopyObjList(struct objlist *oldlist)
 
 struct objlist *LookupObject(char *name, struct nlist *WhichCell)
 {
-#ifdef HASH_OBJECTS
-  return((struct objlist *)HashLookup(name, WhichCell->objtab, OBJHASHSIZE));
-#else		
-	struct objlist *tp;
-	
-	if (QuickSearch && CurrentCell == WhichCell) {
-	  tp = LastPlaced;
-	  while (tp != NULL) {
-		if (match(name, tp->name)) return (tp);
-		tp = tp->next;
-	      }
-	}
-	/* if not QuickSearch, or QuickSearch not successful */
-	tp = WhichCell->cell;
-	while (tp != NULL) {
-		if (match(name, tp->name)) return (tp);
-		tp = tp->next;
-	}
-	return (NULL);
-#endif
+   return((struct objlist *)HashLookup(name, &(WhichCell->objdict)));
 }
 
 struct objlist *LookupInstance(char *name, struct nlist *WhichCell)
 /* searches for exact match of instance 'name' in cell 'WhichCell' */
 {
-#ifdef HASH_OBJECTS
-  return((struct objlist *)HashLookup(name, WhichCell->insttab, OBJHASHSIZE));
-#else		
-	struct objlist *tp;
-	
-	if (QuickSearch && CurrentCell == WhichCell) {
-	  tp = LastPlaced;
-	  while (tp != NULL) {
-		if (match(name, tp->instance)) return (tp);
-		tp = tp->next;
-	      }
-	}
-	/* if not QuickSearch, or QuickSearch not successful */
-	tp = WhichCell->cell;
-	while (tp != NULL) {
-		if (match(name, tp->instance)) return (tp);
-		tp = tp->next;
-	}
-	return (NULL);
-#endif
+   return((struct objlist *)HashLookup(name, &(WhichCell->instdict)));
 }
 
 
@@ -942,8 +1022,17 @@ void UpdateNodeNumbers(struct objlist *lst, int from, int to)
 	}
 }
 
-
 void AddToCurrentCell(struct objlist *ob)
+{
+   AddToCurrentCellNoHash(ob);
+
+   /* add to object hash table for this cell */
+   if (CurrentCell != NULL) {
+      HashPtrInstall(ob->name, ob, &(CurrentCell->objdict));
+   }
+}
+
+void AddToCurrentCellNoHash(struct objlist *ob)
 {
   if (CurrentCell == NULL) {
     Fprintf(stderr,"No current cell for ");
@@ -957,85 +1046,63 @@ void AddToCurrentCell(struct objlist *ob)
     return;
   }
 
-#ifdef USE_TAIL_POINTER
   if (CurrentCell->cell == NULL) CurrentCell->cell = ob;
   else CurrentTail->next = ob;
   CurrentTail = ob;
   ob->next = NULL;
-#else
-  if (CurrentCell->cell == NULL) CurrentCell->cell = ob;
-  else {
-    struct objlist *ob2;
-      
-    ob2 = CurrentCell->cell;
-    while (ob2->next != NULL) ob2 = ob2->next;
-    ob2->next = ob;
-  }
-  ob->next = NULL;
-#endif
-
-#ifdef HASH_OBJECTS
-  /* add to object hash table for this cell */
-  HashPtrInstall(ob->name, ob, CurrentCell->objtab, OBJHASHSIZE);
-#endif
 }
 
 void AddInstanceToCurrentCell(struct objlist *ob)
 {
-#ifdef HASH_OBJECTS
   /* add to instance hash table for this cell */
-  HashPtrInstall(ob->instance, ob, CurrentCell->insttab, OBJHASHSIZE);
-#endif
+  HashPtrInstall(ob->instance.name, ob, &(CurrentCell->instdict));
 }
 
 void FreeObject(struct objlist *ob)
 {
   /* This just frees the object record.  Beware of pointer left	*/
-  /* in the objtab hash table.  Hash table records should be	*/
+  /* in the objlist hash table.  Hash table records should be	*/
   /* removed first.						*/
 
   if (ob->name != NULL) FreeString(ob->name);
 
   if (ob->type == PROPERTY) {
-     /* Property records are different in that they use "instance" and	*/
-     /* "model" to save pointers to linked lists.			*/
-     if (ob->model != NULL) {
-	struct keyvalue *kv, *kvnext;
-	kv = (struct keyvalue *)ob->model;
-	while (kv != NULL) {
-	   kvnext = kv->next;
+     if (ob->instance.props != NULL) {
+	struct valuelist *kv;
+        int i;
+	for (i = 0; ; i++) {
+	   kv = &(ob->instance.props[i]);
+	   if (kv->type == PROP_ENDLIST) break;
 	   FreeString(kv->key);
-	   FreeString(kv->value);
-	   FREE(kv);
-	   kv = kvnext;
+	   if (kv->type == PROP_STRING && kv->value.string != NULL)
+	      FreeString(kv->value.string);
+	   else if (kv->type == PROP_EXPRESSION) {
+	      struct tokstack *stackptr, *nptr;
+	      stackptr = kv->value.stack;
+	      while (stackptr != NULL) {
+		 nptr = stackptr->next;
+		 if (stackptr->toktype == TOK_STRING)
+		    FREE(stackptr->data.string);
+		 FREE(stackptr);
+		 stackptr = nptr;
+	      }
+	   }
 	}
-     }
-     if (ob->instance != NULL) {
-	struct valuelist *vl, *vlnext;
-	vl = (struct valuelist *)ob->instance;
-	while (vl != NULL) {
-	   vlnext = vl->next;
-	   FREE(vl);
-	   vl = vlnext;
-	}
+	FREE(ob->instance.props);
      }
   }
   else {
      /* All other records */
-     if (ob->model != NULL) FreeString(ob->model);
-     if (ob->instance != NULL) FreeString(ob->instance);
+     if (ob->instance.name != NULL) FreeString(ob->instance.name);
   }
+  if (ob->model.class != NULL) FreeString(ob->model.class);
   FREE(ob);
 }
 
 
 void FreeObjectAndHash(struct objlist *ob, struct nlist *ptr)
 {
-#ifdef HASH_OBJECTS
-   HashDelete(ob->name, ptr->objtab, OBJHASHSIZE);
-
-#endif	// HASH_OBJECTS
-
+   HashDelete(ob->name, &(ptr->objdict));
    FreeObject(ob);
 }
 
@@ -1051,7 +1118,7 @@ int NumberOfPorts(char *cellname)
   if (tp == NULL) return(0);
   ports = 0;
   for (ob = tp->cell; ob != NULL; ob = ob->next)
-    if (IsPort(ob->type)) ports++;
+    if (IsPort(ob)) ports++;
   return(ports);
 }
   
@@ -1066,10 +1133,10 @@ void FreePorts(char *cellname)
   if (ob == NULL) return;
   tp->cell = NULL;
 
-  while (ob && IsPort(ob->type)) {
+  while (ob && IsPort(ob)) {
     obnext = ob->next;
-    if (ob->model != NULL) FreeString(ob->model);
-    if (ob->instance != NULL) FreeString(ob->instance);
+    if (ob->name != NULL) FreeString(ob->name);
+    if (ob->instance.name != NULL) FreeString(ob->instance.name);
     FREE(ob);
     ob = obnext;
   }
@@ -1078,9 +1145,9 @@ void FreePorts(char *cellname)
   oblast = ob;
   while (ob) {
     obnext = ob->next;
-    if (IsPort(ob->type)) {
-       if (ob->model != NULL) FreeString(ob->model);
-       if (ob->instance != NULL) FreeString(ob->instance);
+    if (IsPort(ob)) {
+       if (ob->name != NULL) FreeString(ob->name);
+       if (ob->instance.name != NULL) FreeString(ob->instance.name);
        FREE(ob);
        oblast->next = obnext;
     }
@@ -1137,7 +1204,7 @@ static char *OldNodeName(struct nlist *tp, int node)
   /* make second pass, looking for ports */
   ob = tp->cell;
   while (ob != NULL) {
-    if ((node == ob->node) && IsPort(ob->type)) {
+    if ((node == ob->node) && IsPort(ob)) {
       strcpy(StrBuffer, ob->name);
       return(StrBuffer);
     }
@@ -1197,7 +1264,7 @@ static char *OldNodeName(struct nlist *tp, int node)
   for (ob = tp->cell; ob != NULL; ob = ob->next) {
     if (node == ob->node) {
       if (ob->type >= FIRSTPIN) firstpin = ob;
-      else if (IsPort(ob->type)) {
+      else if (IsPort(ob)) {
 	firstport = ob;
 	strcpy(StrBuffer,ob->name);
 	return(StrBuffer);
@@ -1229,7 +1296,6 @@ static char *OldNodeName(struct nlist *tp, int node)
 char *NodeName(struct nlist *tp, int node)
 {
   if (node == -1) return("Disconnected");
-#ifdef CACHE_NODENAMES
   if (tp->nodename_cache != NULL) {
     if (node > tp->nodename_cache_maxnodenum || 
 	tp->nodename_cache[node] == NULL)
@@ -1237,7 +1303,6 @@ char *NodeName(struct nlist *tp, int node)
     else
       return (tp->nodename_cache[node]->name);
   }
-#endif
   return (OldNodeName(tp, node));
 }
 
@@ -1250,34 +1315,30 @@ char *NodeAlias(struct nlist *tp, struct objlist *ob)
 /*    Fprintf(stderr,"Disconnected node in NodeAlias: %s\n",ob->name); */
     return(ob->name);
   }
-#ifdef CACHE_NODENAMES
   if ((ob->node >= 0) && (tp->nodename_cache != NULL) &&
 		(ob->node <= tp->nodename_cache_maxnodenum))
     return (tp->nodename_cache[ob->node]->name);
-#endif
   return (OldNodeName(tp, ob->node));
 }
 
 void FreeNodeNames(struct nlist *tp)
 {
-#ifdef CACHE_NODENAMES
   if (tp == NULL) return;
   if (tp->nodename_cache != NULL)
     FREE(tp->nodename_cache);
   tp->nodename_cache = NULL;
   tp->nodename_cache_maxnodenum = 0;
-#endif
 }
 
 void CacheNodeNames(struct nlist *tp)
 {
-#ifdef CACHE_NODENAMES
   int nodes;
   struct objlist *ob;
 
   if (tp == NULL) return;
   if (tp->nodename_cache != NULL) FreeNodeNames(tp);
   nodes = 0;
+
   for (ob = tp->cell; ob != NULL; ob = ob->next)
     if (ob->node > nodes) nodes = ob->node;
 
@@ -1321,6 +1382,5 @@ void CacheNodeNames(struct nlist *tp)
       break;
     }
   }
-#endif
 }
 

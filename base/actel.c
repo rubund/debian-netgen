@@ -27,6 +27,10 @@ the Free Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. */
 #include <stdlib.h>  /* for strtol on PC */
 #endif
 
+#ifdef TCL_NETGEN
+#include <tcl.h>
+#endif
+
 #include "netgen.h"
 #include "objlist.h"
 #include "netfile.h"
@@ -35,7 +39,7 @@ the Free Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. */
 	
 #define ACTELHASHSIZE 99
 static long actelhashbase = 0xA00;
-static struct hashlist *actelnametab[ACTELHASHSIZE];
+static struct hashdict actelnamedict;
 static FILE *actelfile;
 
 char *ActelName(char *Name);
@@ -49,16 +53,16 @@ void PrintActelNames(char *filename)
 {
   if (filename == NULL) actelfile = stdout;
   else actelfile = fopen(filename,"w");
-  RecurseHashTable(actelnametab, ACTELHASHSIZE, PrintActelName);
+  RecurseHashTable(&actelnamedict, PrintActelName);
   if (actelfile != stdout) fclose(actelfile);
 }
 
 long ActelNameHash(char *name)
-/* hashes name into nametab if necessary, then returns address of entry */
+/* hashes name into namedict if necessary, then returns address of entry */
 {
   struct hashlist *p;
 
-  p = HashInstall(name, actelnametab, ACTELHASHSIZE);
+  p = HashInstall(name, &actelnamedict);
   if (p == NULL) return(0);
   if (p->ptr != NULL) return ((long)(p->ptr));
   actelhashbase++;
@@ -186,7 +190,7 @@ void actelCell(char *name)
   /* check to see that all children have been dumped */
   ob = tp->cell;
   while (ob != NULL) {
-    tp2 = LookupCell(ob->model);
+    tp2 = LookupCell(ob->model.class);
     if ((tp2 != NULL) && !(tp2->dumped)) 
       actelCell(tp2->name);
     ob = ob->next;
@@ -233,12 +237,12 @@ void actelCell(char *name)
   ob = tp->cell;
   while (ob != NULL) {
     if (ob->type == FIRSTPIN) { /* this is an instance */
-      if ((LookupCell(ob->model))->class != CLASS_SUBCKT)
+      if ((LookupCell(ob->model.class))->class != CLASS_SUBCKT)
 	FlushString ("USE ADLIB:%s; %s.\n",
-		     ActelName(ob->model), ActelName(ob->instance));
+		     ActelName(ob->model.class), ActelName(ob->instance.name));
       else
 	FlushString ("USE %s; %s.\n",
-		     ActelName(ob->model), ActelName(ob->instance));
+		     ActelName(ob->model.class), ActelName(ob->instance.name));
     }
     ob = ob->next;
   }
@@ -278,7 +282,7 @@ void actelCell(char *name)
 	      FlushString(", ");
 	    /* write it out if it is a REAL port or a PIN */
 	    if (ob->type >= FIRSTPIN)
-	      FlushString("%s:%s", ActelName(ob->instance),
+	      FlushString("%s:%s", ActelName(ob->instance.name),
 	      /* was strchr below, but failed for FLATTENED objects 12/12/88 */
 			  ActelName(strrchr(ob->name, SEPARATOR[0]) + 1));
 	    else
@@ -332,7 +336,7 @@ void actelCell(char *name)
 	      FlushString(", ");
 	    /* write it out if it is a REAL port or a PIN */
 	    if (ob->type >= FIRSTPIN)
-	      FlushString("%s:%s", ActelName(ob->instance),
+	      FlushString("%s:%s", ActelName(ob->instance.name),
 	      /* was strchr below, but failed for FLATTENED objects 12/12/88 */
 			  ActelName(strrchr(ob->name, SEPARATOR[0]) + 1));
 	    else
@@ -360,12 +364,12 @@ void actelCell(char *name)
   while (ob != NULL) {
     if (ob->type != NODE) {
       FlushString ("NET NET%d; ", ob->node);
-      if (IsPort(ob->type)) 
+      if (IsPort(ob)) 
 	FlushString("%s.\n",
 		    ActelName(ob->name));
       else if (ob->type >= FIRSTPIN) 
 	FlushString("%s:%s.\n",
-		    ActelName(ob->model), 
+		    ActelName(ob->model.class), 
 		    /* was strchr below 12/12/88 */
 		    ActelName(strrchr(ob->name, SEPARATOR[0]) + 1));
     }
@@ -399,7 +403,7 @@ void Actel(char *name, char *filename)
     return;
   }
   ClearDumpedList();
-  InitializeHashTable(actelnametab, ACTELHASHSIZE);
+  InitializeHashTable(&actelnamedict, ACTELHASHSIZE);
   if (LookupCell(name) != NULL) 
     actelCell(name);
   CloseFile(FileName);

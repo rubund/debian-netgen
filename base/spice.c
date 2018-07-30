@@ -25,8 +25,10 @@ the Free Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. */
 #include <stdarg.h>  /* what about varargs, like in pdutils.c ??? */
 #endif
 
-#ifdef IBMPC
-#include <stdlib.h>  /* for calloc(), free() */
+#include <stdlib.h>  /* for calloc(), free(), getenv() */
+#ifndef IBMPC
+#include <sys/types.h>	/* for getpwnam() tilde expansion */
+#include <pwd.h>
 #endif
 
 #ifdef TCL_NETGEN
@@ -39,18 +41,40 @@ the Free Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. */
 #include "netfile.h"
 #include "print.h"
 
+// Global storage for parameters from .PARAM
+struct hashdict spiceparams;
+
+// Global setting for auto-detect of empty subcircuits as
+// black-box subcells.
+int auto_blackbox = FALSE;
+
+// Check if a token represents a numerical value (with
+// units) or an expression.  This is basically a hack
+// to see if it either passes StringIsValue() or is
+// enclosed in braces.  Probably should attempt to
+// parse the expression, to be pedantic.  Not sure all
+// expressions have to be in braces.
+
+int StringIsValueOrExpression(char *token)
+{
+    if (StringIsValue(token)) return TRUE;
+    else if (*token == '{') return TRUE;
+    else return FALSE;
+}
+
 void SpiceSubCell(struct nlist *tp, int IsSubCell)
 {
   struct objlist *ob;
   int node, maxnode;
   char *model;
+  struct tokstack *stackptr;
 
   /* check to see that all children have been dumped */
   for (ob = tp->cell; ob != NULL; ob = ob->next) {
     if (ob->type == FIRSTPIN) {
       struct nlist *tp2;
 
-      tp2 = LookupCellFile(ob->model, tp->file);
+      tp2 = LookupCellFile(ob->model.class, tp->file);
       if ((tp2 != NULL) && !(tp2->dumped) && (tp2->class == CLASS_SUBCKT)) 
 	SpiceSubCell(tp2, 1);
     }
@@ -69,7 +93,7 @@ void SpiceSubCell(struct nlist *tp, int IsSubCell)
   for (ob = tp->cell; ob != NULL; ob = ob->next)
     if (ob->node > maxnode) maxnode = ob->node;
 
-/* was:  for (node = 0; node <= maxnode; node++)  */
+  /* was:  for (node = 0; node <= maxnode; node++)  */
   for (node = 1; node <= maxnode; node++) 
     FlushString("# %3d = %s\n", node, NodeName(tp, node));
 
@@ -80,7 +104,7 @@ void SpiceSubCell(struct nlist *tp, int IsSubCell)
 	char spice_class;
 	struct nlist *tp2;
 
-	tp2 = LookupCellFile(ob->model, tp->file);
+	tp2 = LookupCellFile(ob->model.class, tp->file);
 	model = tp2->name;
 
 	/* Convert class numbers (defined in netgen.h) to SPICE classes */
@@ -116,7 +140,7 @@ void SpiceSubCell(struct nlist *tp, int IsSubCell)
 	      continue;		/* ignore it. . . */
 	}
 	
-        FlushString("%c%s", spice_class, ob->instance);
+        FlushString("%c%s", spice_class, ob->instance.name);
 
         /* Print out nodes.  FETs switch node order */
 
@@ -150,7 +174,6 @@ void SpiceSubCell(struct nlist *tp, int IsSubCell)
 
 	/* caps and resistors, print out device value */
 
-
 	/* print out device type (model/subcircuit name) */
 
 	switch (tp2->class) {
@@ -159,8 +182,15 @@ void SpiceSubCell(struct nlist *tp, int IsSubCell)
 		 ob = ob->next;
 		 if (ob->type == PROPERTY) {
 		    struct valuelist *vl;
-		    vl = (struct valuelist *)ob->instance;
-		    if (vl) FlushString(" %g", vl->value.dval);
+		    int i;
+		    for (i == 0;; i++) {
+		       vl = &(ob->instance.props[i]);
+		       if (vl->type == PROP_ENDLIST) break;
+		       else if (vl->type == PROP_VALUE) {
+			  FlushString(" %g", vl->value.dval);
+			  break;
+		       }
+		    }
 		 }
 	      }
 	      else
@@ -172,8 +202,15 @@ void SpiceSubCell(struct nlist *tp, int IsSubCell)
 		 ob = ob->next;
 		 if (ob->type == PROPERTY) {
 		    struct valuelist *vl;
-		    vl = (struct valuelist *)ob->instance;
-		    if (vl) FlushString(" %g", vl->value.dval);
+		    int i;
+		    for (i == 0;; i++) {
+		       vl = &(ob->instance.props[i]);
+		       if (vl->type == PROP_ENDLIST) break;
+		       else if (vl->type == PROP_VALUE) {
+			  FlushString(" %g", vl->value.dval);
+			  break;
+		       }
+		    }
 		 }
 	      }
 	      else
@@ -187,9 +224,97 @@ void SpiceSubCell(struct nlist *tp, int IsSubCell)
 	/* write properties (if any) */
 	if (ob) ob = ob->next;
 	if (ob && ob->type == PROPERTY) {
-	   struct keyvalue *kv;
-	   for (kv = (struct keyvalue *)ob->model; kv != NULL; kv = kv->next) {
-	      FlushString(" %s=%s", kv->key, kv->value);
+	   struct valuelist *kv;
+	   int i;
+	   for (i = 0; ; i++) {
+	      kv = &(ob->instance.props[i]);
+	      if (kv->type == PROP_ENDLIST) break;
+	      switch (kv->type) {
+		 case PROP_STRING:
+	            FlushString(" %s=%s", kv->key, kv->value.string);
+		    break;
+		 case PROP_INTEGER:
+	            FlushString(" %s=%d", kv->key, kv->value.ival);
+		    break;
+		 case PROP_DOUBLE:
+		 case PROP_VALUE:
+	            FlushString(" %s=%g", kv->key, kv->value.dval);
+		    break;
+		 case PROP_EXPRESSION:
+	            FlushString(" %s=", kv->key);
+		    stackptr = kv->value.stack;
+		    while (stackptr->next != NULL)
+		       stackptr = stackptr->next;
+		    
+		    while (stackptr != NULL) {
+		       switch (stackptr->toktype) {
+			  case TOK_STRING:
+			     FlushString("%s", stackptr->data.string);
+			     break;
+			  case TOK_DOUBLE:
+			     FlushString("%d", stackptr->data.dvalue);
+			     break;
+			  case TOK_MULTIPLY:
+			     FlushString("*");
+			     break;
+			  case TOK_DIVIDE:
+			     FlushString("/");
+			     break;
+			  case TOK_PLUS:
+			     FlushString("+");
+			     break;
+			  case TOK_MINUS:
+			     FlushString("-");
+			     break;
+			  case TOK_FUNC_OPEN:
+			     FlushString("(");
+			     break;
+			  case TOK_FUNC_CLOSE:
+			     FlushString(")");
+			     break;
+			  case TOK_GT:
+			     FlushString(">");
+			     break;
+			  case TOK_LT:
+			     FlushString("<");
+			     break;
+			  case TOK_GE:
+			     FlushString(">=");
+			     break;
+			  case TOK_LE:
+			     FlushString("<=");
+			     break;
+			  case TOK_EQ:
+			     FlushString("==");
+			     break;
+			  case TOK_NE:
+			     FlushString("!=");
+			     break;
+			  case TOK_GROUP_OPEN:
+			     FlushString("{");
+			     break;
+			  case TOK_GROUP_CLOSE:
+			     FlushString("}");
+			     break;
+			  case TOK_FUNC_IF:
+			     FlushString("IF(");
+			     break;
+			  case TOK_FUNC_THEN:
+			  case TOK_FUNC_ELSE:
+			     FlushString(",");
+			     break;
+			  case TOK_SGL_QUOTE:
+			     FlushString("'");
+			     break;
+			  case TOK_DBL_QUOTE:
+			     FlushString("\"");
+			     break;
+		       }
+		       stackptr = stackptr->last;
+		    }
+	            FlushString(" ");
+		    break;
+	      }
 	   }
 	}
 	FlushString("\n");
@@ -248,21 +373,81 @@ int renamepins(struct hashlist *p, int file)
 
    for (ob = ptr->cell; ob != NULL; ob = ob->next) {
       if (ob->type == FIRSTPIN) {
-	 tc = LookupCellFile(ob->model, file);
+	 tc = LookupCellFile(ob->model.class, file);
 	 obp = ob;
 	 for (ob2 = tc->cell; ob2 != NULL; ob2 = ob2->next) {
 	    if (ob2->type != PORT) break;
-	    if (!matchnocase(ob2->name, obp->name + strlen(obp->instance) + 1)) {
+	    else if ((obp->type < FIRSTPIN) || (obp->type == FIRSTPIN && obp != ob)) {
+	       Fprintf(stderr, "Pin count mismatch between cell and instance of %s\n",
+			tc->name);
+	       InputParseError(stderr);
+	       break;
+	    }
+	    if (!matchnocase(ob2->name, obp->name + strlen(obp->instance.name) + 1)) {
 	       // Printf("Cell %s pin correspondence: %s vs. %s\n",
 	       // 	tc->name, obp->name, ob2->name);
 	       FREE(obp->name);
-	       obp->name = (char *)MALLOC(strlen(obp->instance) + strlen(ob2->name) + 2);
-	       sprintf(obp->name, "%s/%s", obp->instance, ob2->name);
+	       obp->name = (char *)MALLOC(strlen(obp->instance.name)
+				+ strlen(ob2->name) + 2);
+	       sprintf(obp->name, "%s/%s", obp->instance.name, ob2->name);
 	    }
 	    obp = obp->next;
+	    if (obp == NULL) break;
 	 }
       }
    }
+}
+
+/* If any pins are marked unconnected, see if there are	*/
+/* other pins of the same name that have connections.	*/
+/* Also remove any unconnected globals (just for cleanup) */
+
+void CleanupSubcell() {
+   int maxnode = 0;
+   int has_devices = FALSE;
+   struct objlist *sobj, *nobj, *lobj, *pobj;
+
+   if (CurrentCell == NULL) return;
+
+   for (sobj = CurrentCell->cell; sobj; sobj = sobj->next)
+      if (sobj->node > maxnode)
+	 maxnode = sobj->node + 1;
+
+   lobj = NULL;
+   for (sobj = CurrentCell->cell; sobj != NULL;) {
+      nobj = sobj->next;
+      if (sobj->type == FIRSTPIN)
+	 has_devices = TRUE;
+      if (sobj->node < 0) {
+         if (IsGlobal(sobj)) {
+ 	    if (lobj != NULL)
+	       lobj->next = sobj->next;
+	    else
+	       CurrentCell->cell = sobj->next;
+	    FreeObjectAndHash(sobj, CurrentCell);
+	 }
+	 else if (IsPort(sobj) && sobj->model.port == PROXY)
+	    sobj->node = maxnode++;
+	 else if (IsPort(sobj)) {
+	    for (pobj = CurrentCell->cell; pobj && (pobj->type == PORT);
+			pobj = pobj->next) {
+	       if (pobj == sobj) continue;
+	       if (matchnocase(pobj->name, sobj->name) && pobj->node >= 0) {
+		  sobj->node = pobj->node;
+		  break;
+	       }
+	    }
+	    lobj = sobj;
+	 }
+	 else
+	    lobj = sobj;
+      }
+      else
+         lobj = sobj;
+      sobj = nobj;
+   }
+   if ((has_devices == FALSE) && (auto_blackbox == TRUE))
+      SetClass(CLASS_MODULE);
 }
 
 /*------------------------------------------------------*/
@@ -303,703 +488,47 @@ void PopStack(struct cellstack **top)
 }
 
 /* Forward declaration */
-extern void IncludeSpice(char *, int, struct cellstack **);
+extern void IncludeSpice(char *, int, struct cellstack **, int);
 
 /*------------------------------------------------------*/
 /* Read a SPICE deck					*/
 /*------------------------------------------------------*/
 
-void ReadSpiceFile(char *fname, int filenum, struct cellstack **CellStackPtr)
+void ReadSpiceFile(char *fname, int filenum, struct cellstack **CellStackPtr,
+		int blackbox)
 {
-  int cdnum = 1, rdnum = 1, ndev, multi;
-  int warnings = 0, update = 0;
-  char *eqptr, devtype;
+  int cdnum = 1, rdnum = 1;
+  int warnings = 0, update = 0, hasports = 0;
+  char *eqptr, devtype, in_subckt;
   struct keyvalue *kvlist = NULL;
-  char inst[100], model[100], instname[100];
+  char inst[256], model[256], instname[256];
   struct nlist *tp;
   struct objlist *parent, *sobj, *nobj, *lobj, *pobj;
 
+  inst[255] = '\0';
+  model[255] = '\0';
+  instname[255] = '\0';
+  in_subckt = (char)0;
+  
   while (!EndParseFile()) {
-    SkipTok(); /* get the next token */
-    if (EndParseFile()) break;
 
-    if (nexttok[0] == '*') SkipNewLine();
+    SkipTok(NULL); /* get the next token */
+    if ((EndParseFile()) && (nexttok == NULL)) break;
 
-    else if (toupper(nexttok[0]) == 'Q') {
-      char emitter[100], base[100], collector[100];
+    if (nexttok[0] == '*') SkipNewLine(NULL);
 
-      if (!(*CellStackPtr)) {
-	CellDefNoCase(fname, filenum);
-	PushStack(fname, CellStackPtr);
-      }
-      strncpy(inst, nexttok + 1, 99); SpiceTokNoNewline(); 
-      strncpy(collector, nexttok, 99); SpiceTokNoNewline();
-      strncpy(base, nexttok, 99);   SpiceTokNoNewline();
-      strncpy(emitter, nexttok, 99);  SpiceTokNoNewline();
-      /* make sure all the nodes exist */
-      if (LookupObject(collector, CurrentCell) == NULL) Node(collector);
-      if (LookupObject(base, CurrentCell) == NULL) Node(base);
-      if (LookupObject(emitter, CurrentCell) == NULL) Node(emitter);
-
-      /* Read the device model */
-      snprintf(model, 99, "%s", nexttok);
-
-      ndev = 1;
-      while (nexttok != NULL)
-      {
-	 /* Parse for M and other parameters */
-
-	 SpiceTokNoNewline();
-	 if ((nexttok == NULL) || (nexttok[0] == '\0')) break;
-	 if ((eqptr = strchr(nexttok, '=')) != NULL)
-	 {
-	    *eqptr = '\0';
-	    if (!strcasecmp(nexttok, "M"))
-		sscanf(eqptr + 1, "%d", &ndev);
-	    else 
-		AddProperty(&kvlist, nexttok, eqptr + 1);
-	 }
-      }
-
-      if (LookupCellFile(model, filenum) == NULL) {
-	 CellDefNoCase(model, filenum);
-	 Port("collector");
-	 Port("base");
-	 Port("emitter");
-	 SetClass(CLASS_BJT);
-         EndCell();
-	 ReopenCellDef((*CellStackPtr)->cellname, filenum);	/* Reopen */
-      }
-
-      multi = (ndev > 1) ? 1 : 0;
-      if (!multi) sprintf(instname, "%s%s", model, inst);
-      while (ndev > 0)
-      {
-         if (multi) sprintf(instname, "%s%s.%d", model, inst, ndev);
-	 Cell(instname, model, collector, base, emitter);
-	 LinkProperties(model, kvlist);
-	 ndev--;
-      }
-      DeleteProperties(&kvlist);
-    }
-    else if (toupper(nexttok[0]) == 'M') {
-      char drain[100], gate[100], source[100], bulk[100];
-
-      if (!(*CellStackPtr)) {
-	CellDefNoCase(fname, filenum);
-	PushStack(fname, CellStackPtr);
-      }
-      strncpy(inst, nexttok + 1, 99); SpiceTokNoNewline(); 
-      strncpy(drain, nexttok, 99);  SpiceTokNoNewline();
-      strncpy(gate, nexttok, 99);   SpiceTokNoNewline();
-      strncpy(source, nexttok, 99); SpiceTokNoNewline();
-      /* make sure all the nodes exist */
-      if (LookupObject(drain, CurrentCell) == NULL) Node(drain);
-      if (LookupObject(gate, CurrentCell) == NULL) Node(gate);
-      if (LookupObject(source, CurrentCell) == NULL) Node(source);
-
-      /* handle the substrate node */
-      strncpy(bulk, nexttok, 99); SpiceTokNoNewline();
-      if (LookupObject(bulk, CurrentCell) == NULL) Node(bulk);
-
-      /* Read the device model */
-      snprintf(model, 99, "%s", nexttok);
-
-      ndev = 1;
-      while (nexttok != NULL)
-      {
-	 /* Parse for parameters; treat "M" separately */
-
-	 SpiceTokNoNewline();
-	 if ((nexttok == NULL) || (nexttok[0] == '\0')) break;
-	 if ((eqptr = strchr(nexttok, '=')) != NULL)
-	 {
-	    *eqptr = '\0';
-	    if (!strcasecmp(nexttok, "M"))
-		sscanf(eqptr + 1, "%d", &ndev);
-	    else if (!strcasecmp(nexttok, "L"))
-		AddProperty(&kvlist, "length", eqptr + 1);
-	    else if (!strcasecmp(nexttok, "W"))
-		AddProperty(&kvlist, "width", eqptr + 1);
-	    else 
-		AddProperty(&kvlist, nexttok, eqptr + 1);
-	 }
-      }
-
-      /* Treat each different model name as a separate device class	*/
-      /* The model name is prefixed with "M/" so that we know this is a	*/
-      /* SPICE transistor.						*/
-
-      if (LookupCellFile(model, filenum) == NULL) {
-	 CellDefNoCase(model, filenum);
-	 Port("drain");
-	 Port("gate");
-	 Port("source");
-	 Port("bulk");
-	 PropertyDouble("length", 0.01);
-	 PropertyDouble("width", 0.01);
-	 SetClass(CLASS_FET);
-         EndCell();
-	 ReopenCellDef((*CellStackPtr)->cellname, filenum);	/* Reopen */
-      }
-
-      multi = (ndev > 1) ? 1 : 0;
-      if (!multi) sprintf(instname, "%s%s", model, inst);
-      while (ndev > 0)
-      {
-         if (multi) sprintf(instname, "%s%s.%d", model, inst, ndev);
-	 Cell(instname, model, drain, gate, source, bulk);
-	 LinkProperties(model, kvlist);
-	 ndev--;
-      }
-      DeleteProperties(&kvlist);
-      SpiceSkipNewLine();
-    }
-    else if (toupper(nexttok[0]) == 'C') {	/* 2-port capacitors */
-      int usemodel = 0;
-
-      if (IgnoreRC) {
-	 SpiceSkipNewLine();
-      }
-      else {
-        char ctop[200], cbot[200];
-
-        if (!(*CellStackPtr)) {
-	  CellDefNoCase(fname, filenum);
-	  PushStack(fname, CellStackPtr);
-        }
-        strncpy(inst, nexttok + 1, 99); SpiceTokNoNewline(); 
-        strncpy(ctop, nexttok, 99); SpiceTokNoNewline();
-        strncpy(cbot, nexttok, 99); SpiceTokNoNewline();
-
-        /* make sure all the nodes exist */
-        if (LookupObject(ctop, CurrentCell) == NULL) Node(ctop);
-        if (LookupObject(cbot, CurrentCell) == NULL) Node(cbot);
-
-	/* Get capacitor value (if present), save as property "value" */
-	if (nexttok != NULL) {
-	   if (StringIsValue(nexttok)) {
-	      AddProperty(&kvlist, "value", nexttok);
-	      SpiceTokNoNewline();
-	   }
-	}
-
-	/* Semiconductor (modeled) capacitor.  But first need to make	*/
-	/* sure that this does not start the list of parameters.	*/
-
-	model[0] = '\0';
-	if ((nexttok != NULL) && ((eqptr = strchr(nexttok, '=')) == NULL))
-	   snprintf(model, 99, "%s", nexttok);
-
-	/* Any other device properties? */
-	ndev = 1;
-        while (nexttok != NULL)
-        {
-	   SpiceTokNoNewline();
-	   if ((nexttok == NULL) || (nexttok[0] == '\0')) break;
-	   if ((eqptr = strchr(nexttok, '=')) != NULL) {
-	      *eqptr = '\0';
-	      if (!strcasecmp(nexttok, "M"))
-		 sscanf(eqptr + 1, "%d", &ndev);
-	      else
-	         AddProperty(&kvlist, nexttok, eqptr + 1);
-	   }
-	   else if (!strncmp(nexttok, "$[", 2)) {
-	      // Support for CDL modeled capacitor format
-	      snprintf(model, 99, "%s", nexttok + 2);
-	      if ((eqptr = strchr(model, ']')) != NULL)
-		 *eqptr = '\0';
-	   }
-	}
-
-	if (model[0] == '\0')
-	   strcpy(model, "c");		/* Use default capacitor model */
-	else
-	{
-	   if (LookupCellFile(model, filenum) == NULL) {
-	      CellDefNoCase(model, filenum);
-	      Port("top");
-	      Port("bottom");
-	      PropertyDouble("value", 0.01);
-	      SetClass(CLASS_CAP);
-              EndCell();
-	      ReopenCellDef((*CellStackPtr)->cellname, filenum);	/* Reopen */
-	   }
-	   usemodel = 1;
-	}
-
-	multi = (ndev > 1) ? 1 : 0;
-	if (!multi) sprintf(instname, "%s%s", model, inst);
-
-	while (ndev > 0) {
-	   if (multi) sprintf(instname, "%s%s.%d", model, inst, ndev);
-	   if (usemodel)
-              Cell(instname, model, ctop, cbot);
-	   else
-              Cap((*CellStackPtr)->cellname, instname, ctop, cbot);
-	   LinkProperties(model, kvlist);
-	   ndev--;
-	}
-	DeleteProperties(&kvlist);
-      }
-    }
-    else if (toupper(nexttok[0]) == 'R') {	/* 2-port resistors */
-      int usemodel = 0;
-
-      if (IgnoreRC) {
-	 SpiceSkipNewLine();
-      }
-      else {
-        char rtop[200], rbot[200];
-
-        if (!(*CellStackPtr)) {
-	  CellDefNoCase(fname, filenum);
-	  PushStack(fname, CellStackPtr);
-        }
-        strncpy(inst, nexttok + 1, 99); SpiceTokNoNewline(); 
-        strncpy(rtop, nexttok, 99);  SpiceTokNoNewline();
-        strncpy(rbot, nexttok, 99);   SpiceTokNoNewline();
-        /* make sure all the nodes exist */
-        if (LookupObject(rtop, CurrentCell) == NULL) Node(rtop);
-        if (LookupObject(rbot, CurrentCell) == NULL) Node(rbot);
-
-	/* Get resistor value (if present); save as property "value" */
-
-	if (nexttok != NULL) {
-	   if (StringIsValue(nexttok)) {
-	      AddProperty(&kvlist, "value", nexttok);
-	      SpiceTokNoNewline();
-	   }
-        }
-
-	/* Semiconductor (modeled) resistor.  But first need to make	*/
-	/* sure that this does not start the list of parameters.	*/
-
-	model[0] = '\0';
-	if ((nexttok != NULL) && ((eqptr = strchr(nexttok, '=')) == NULL))
-	   snprintf(model, 99, "%s", nexttok);
-
-	/* Any other device properties? */
-	ndev = 1;
-        while (nexttok != NULL) {
-	   SpiceTokNoNewline();
-	   if ((nexttok == NULL) || (nexttok[0] == '\0')) break;
-	   if ((eqptr = strchr(nexttok, '=')) != NULL) {
-	      *eqptr = '\0';
-	      if (!strcasecmp(nexttok, "M"))
-		 sscanf(eqptr + 1, "%d", &ndev);
-	      else
-	         AddProperty(&kvlist, nexttok, eqptr + 1);
-	   }
-	   else if (!strncmp(nexttok, "$[", 2)) {
-	      // Support for CDL modeled resistor format
-	      snprintf(model, 99, "%s", nexttok + 2);
-	      if ((eqptr = strchr(model, ']')) != NULL)
-		 *eqptr = '\0';
-	   }
-	}
-
-	if (model[0] != '\0')
-	{
-	   if (LookupCellFile(model, filenum) == NULL) {
-	      CellDefNoCase(model, filenum);
-	      Port("end_a");
-	      Port("end_b");
-	      PropertyDouble("value", 0.01);
-	      SetClass(CLASS_RES);
-              EndCell();
-	      ReopenCellDef((*CellStackPtr)->cellname, filenum);	/* Reopen */
-	   }
-	   usemodel = 1;
-	}
-	else
-	   strcpy(model, "r");		/* Use default resistor model */
-
-	multi = (ndev > 1) ? 1 : 0;
-	if (!multi) sprintf(instname, "%s%s", model, inst);
-
-	while (ndev > 0) {
-	   if (multi) sprintf(instname, "%s%s.%d", model, inst, ndev);
-	   if (usemodel)
-	      Cell(instname, model, rtop, rbot);
-	   else
-              Res((*CellStackPtr)->cellname, instname, rtop, rbot);
-	   LinkProperties(model, kvlist);
-	   ndev--;
-	}
-	DeleteProperties(&kvlist);
-      }
-    }
-    else if (toupper(nexttok[0]) == 'D') {	/* diode */
-      char cathode[100], anode[100];
-
-      if (!(*CellStackPtr)) {
-	CellDefNoCase(fname, filenum);
-	PushStack(fname, CellStackPtr);
-      }
-      strncpy(inst, nexttok + 1, 99); SpiceTokNoNewline(); 
-      strncpy(anode, nexttok, 99);   SpiceTokNoNewline();
-      strncpy(cathode, nexttok, 99); SpiceTokNoNewline();
-      /* make sure all the nodes exist */
-      if (LookupObject(anode, CurrentCell) == NULL) Node(anode);
-      if (LookupObject(cathode, CurrentCell) == NULL) Node(cathode);
-
-      /* Read the device model */
-      snprintf(model, 99, "%s", nexttok);
-
-      ndev = 1;
-      while (nexttok != NULL)
-      {
-	 /* Parse for M and other parameters */
-
-	 SpiceTokNoNewline();
-	 if ((nexttok == NULL) || (nexttok[0] == '\0')) break;
-	 if ((eqptr = strchr(nexttok, '=')) != NULL)
-	 {
-	    *eqptr = '\0';
-	    if (!strcasecmp(nexttok, "M"))
-		sscanf(eqptr + 1, "%d", &ndev);
-	    else 
-		AddProperty(&kvlist, nexttok, eqptr + 1);
-	 }
-      }
-
-      if (LookupCellFile(model, filenum) == NULL) {
-	 CellDefNoCase(model, filenum);
-	 Port("anode");
-	 Port("cathode");
-	 SetClass(CLASS_DIODE);
-         EndCell();
-	 ReopenCellDef((*CellStackPtr)->cellname, filenum);	/* Reopen */
-      }
-      multi = (ndev > 1) ? 1 : 0;
-      if (!multi) sprintf(instname, "%s%s", model, inst);
-      while (ndev > 0)
-      {
-         if (multi) sprintf(instname, "%s%s.%d", model, inst, ndev);
-	 Cell(instname, model, anode, cathode);
-	 LinkProperties(model, kvlist);
-	 ndev--;
-      }
-      DeleteProperties(&kvlist);
-    }
-    else if (toupper(nexttok[0]) == 'T') {	/* transmission line */
-      int usemodel = 0;
-
-      if (IgnoreRC) {
-	 SpiceSkipNewLine();
-      }
-      else {
-        char node1[200], node2[200], node3[200], node4[200];
-
-        if (!(*CellStackPtr)) {
-	  CellDefNoCase(fname, filenum);
-	  PushStack(fname, CellStackPtr);
-        }
-        strncpy(inst, nexttok + 1, 99); SpiceTokNoNewline(); 
-        strncpy(node1, nexttok, 99);  SpiceTokNoNewline();
-        strncpy(node2, nexttok, 99);   SpiceTokNoNewline();
-        strncpy(node3, nexttok, 99);   SpiceTokNoNewline();
-        strncpy(node4, nexttok, 99);   SpiceTokNoNewline();
-        /* make sure all the nodes exist */
-        if (LookupObject(node1, CurrentCell) == NULL) Node(node1);
-        if (LookupObject(node2, CurrentCell) == NULL) Node(node2);
-        if (LookupObject(node3, CurrentCell) == NULL) Node(node3);
-        if (LookupObject(node4, CurrentCell) == NULL) Node(node4);
-
-	/* Lossy (modeled) transmission line.  But first need to make	*/
-	/* sure that this does not start the list of parameters.	*/
-
-	model[0] = '\0';
-	if ((nexttok != NULL) && ((eqptr = strchr(nexttok, '=')) == NULL))
-	   snprintf(model, 99, "%s", nexttok);
-
-	/* Any other device properties? */
-	ndev = 1;
-        while (nexttok != NULL) {
-	   SpiceTokNoNewline();
-	   if ((nexttok == NULL) || (nexttok[0] == '\0')) break;
-	   if ((eqptr = strchr(nexttok, '=')) != NULL) {
-	      *eqptr = '\0';
-	      if (!strcasecmp(nexttok, "M"))
-		 sscanf(eqptr + 1, "%d", &ndev);
-	      else
-	         AddProperty(&kvlist, nexttok, eqptr + 1);
-	   }
-	}
-
-	if (model[0] != '\0')
-	{
-	   if (LookupCellFile(model, filenum) == NULL) {
-	      CellDefNoCase(model, filenum);
-	      Port("node1");
-	      Port("node2");
-	      Port("node3");
-	      Port("node4");
-	      SetClass(CLASS_XLINE);
-              EndCell();
-	      ReopenCellDef((*CellStackPtr)->cellname, filenum);	/* Reopen */
-	   }
-	   usemodel = 1;
-	}
-	else
-	   strcpy(model, "t");		/* Use default xline model */
-
-	multi = (ndev > 1) ? 1 : 0;
-	if (!multi) sprintf(instname, "%s%s", model, inst);
-
-	while (ndev > 0) {
-	   if (multi) sprintf(instname, "%s%s.%d", model, inst, ndev);
-	   if (usemodel)
-	      Cell(instname, model, node1, node2, node3, node4);
-	   else
-              XLine((*CellStackPtr)->cellname, instname, node1, node2,
-			node3, node4);
-	   LinkProperties(model, kvlist);
-	   ndev--;
-	}
-	DeleteProperties(&kvlist);
-      }
-    }
-    else if (toupper(nexttok[0]) == 'L') {	/* inductor */
-      char end_a[100], end_b[100];
-
-      if (!(*CellStackPtr)) {
-	CellDefNoCase(fname, filenum);
-	PushStack(fname, CellStackPtr);
-      }
-      strncpy(inst, nexttok + 1, 99); SpiceTokNoNewline(); 
-      strncpy(end_a, nexttok, 99);   SpiceTokNoNewline();
-      strncpy(end_b, nexttok, 99); SpiceTokNoNewline();
-      /* make sure all the nodes exist */
-      if (LookupObject(end_a, CurrentCell) == NULL) Node(end_a);
-      if (LookupObject(end_b, CurrentCell) == NULL) Node(end_b);
-
-      /* Read the device model */
-      snprintf(model, 99, "%s", nexttok);
-
-      ndev = 1;
-      while (nexttok != NULL)
-      {
-	 /* Parse for M and other parameters */
-
-	 SpiceTokNoNewline();
-	 if ((nexttok == NULL) || (nexttok[0] == '\0')) break;
-	 if ((eqptr = strchr(nexttok, '=')) != NULL)
-	 {
-	    *eqptr = '\0';
-	    if (!strcasecmp(nexttok, "M"))
-		sscanf(eqptr + 1, "%d", &ndev);
-	    else 
-		AddProperty(&kvlist, nexttok, eqptr + 1);
-	 }
-      }
-
-      if (LookupCellFile(model, filenum) == NULL) {
-	 CellDefNoCase(model, filenum);
-	 Port("end_a");
-	 Port("end_b");
-	 SetClass(CLASS_INDUCTOR);
-         EndCell();
-	 ReopenCellDef((*CellStackPtr)->cellname, filenum);	/* Reopen */
-      }
-      multi = (ndev > 1) ? 1 : 0;
-      if (!multi) sprintf(instname, "%s%s", model, inst);
-      while (ndev > 0)
-      {
-         if (multi) sprintf(instname, "%s%s.%d", model, inst, ndev);
-	 Cell(instname, model, end_a, end_b);
-	 LinkProperties(model, kvlist);
-	 ndev--;
-      }
-      DeleteProperties(&kvlist);
-    }
-    else if (toupper(nexttok[0]) == 'X') {	/* subcircuit instances */
-      char instancename[100], subcktname[100];
-
-      struct portelement {
-	char *name;
-	struct portelement *next;
-      };
-
-      struct portelement *head, *tail, *scan, *scannext;
-      struct objlist *obptr;
-
-      snprintf(instancename, 99, "%s", nexttok + 1);
-      strcpy(instancename, nexttok + 1);
-      if (!(*CellStackPtr)) {
-	CellDefNoCase(fname, filenum);
-	PushStack(fname, CellStackPtr);
-      }
-      
-      head = NULL;
-      tail = NULL;
-      SpiceTokNoNewline();
-      ndev = 1;
-      while (nexttok != NULL) {
-	/* must still be a node or a parameter */
-	struct portelement *new_port;
-
-	// CDL format compatibility:  Ignore "/" before the subcircuit name
-	if (matchnocase(nexttok, "/")) {
-           SpiceTokNoNewline();
-	   continue;
-	}
-
-	// Ignore token called "PARAMS:"
-	if (!strcasecmp(nexttok, "PARAMS:")) {
-           SpiceTokNoNewline();
-	   continue;
-	}
-
-	// We need to look for parameters of the type "name=value" BUT
-	// we also need to make sure that what we think is a parameter
-	// is actually a circuit name with an equals sign character in it.
-
-	if (((eqptr = strchr(nexttok, '=')) != NULL) &&
-	    	((tp = LookupCellFile(nexttok, filenum)) == NULL))
-	{
-	    *eqptr = '\0';
-	    if (!strcasecmp(nexttok, "M"))
-		sscanf(eqptr + 1, "%d", &ndev);
-	    else 
-		AddProperty(&kvlist, nexttok, eqptr + 1);
-	}
-	else
-	{
-	    new_port = (struct portelement *)CALLOC(1, sizeof(struct portelement));
-	    new_port->name = strsave(nexttok);
-	    if (head == NULL) head = new_port;
-	    else tail->next = new_port;
-	    new_port->next = NULL;
-	    tail = new_port;
-	}
-	SpiceTokNoNewline();
-      }
-
-      /* find the last element of the list, which is not a port,
-         but the class type */
-      scan = head;
-      while (scan != NULL && scan->next != tail && scan->next != NULL)
-	 scan = scan->next;
-      tail = scan;
-      if (scan->next != NULL) scan = scan->next;
-      tail->next = NULL;
-
-      /* Create cell name and revise instance name based on the cell name */
-      /* For clarity, if "instancename" does not contain the cellname,	  */
-      /* then prepend the cellname to the instance name.  HOWEVER, if any */
-      /* netlist is using instancename/portname to name nets, then we	  */
-      /* will have duplicate node names with conflicting records.  So at  */
-      /* very least prepend an "/" to it. . .				  */
-
-      /* NOTE:  Previously an 'X' was prepended to the name, but this	  */
-      /* caused serious and common errors where, for example, the circuit */
-      /* defined cells NOR and XNOR, causing confusion between node	  */
-      /* names.								  */
-
-      if (strncmp(instancename, scan->name, strlen(scan->name))) {
-         snprintf(subcktname, 99, "%s%s", scan->name, instancename);
-         strcpy(instancename, subcktname);
-      }
-      else {
-         snprintf(subcktname, 99, "/%s", instancename);
-         strcpy(instancename, subcktname);
-      }
-      snprintf(subcktname, 99, "%s", scan->name);
-
-      FREE (scan->name);
-      if (scan == head) {
-	 head = NULL;
-	 Fprintf(stderr, "Error:  Cell %s has no pins and cannot "
-		"be instantiated\n", scan->name);
-	 InputParseError(stderr);
-      }
-      FREE (scan);
-
-      /* Check that the subcell exists.  If not, print a warning and	*/
-      /* generate an empty subcircuit entry matching the call.		*/
-
-      tp = LookupCellFile(subcktname, filenum);
-      if (tp == NULL) {
-	 char defport[8];
-	 int i;
-
-	 snprintf(model, 99, "%s", subcktname);
-	 Fprintf(stdout, "Call to undefined subcircuit %s\n"
-		"Creating placeholder cell definition.\n", subcktname);
-	 CellDefNoCase(subcktname, filenum);
-         for (scan = head, i = 1; scan != NULL; scan = scan->next, i++) {
-	    sprintf(defport, "%d", i);	
-	    Port(defport);
-	 }
-	 SetClass(CLASS_MODULE);
-         EndCell();
-	 ReopenCellDef((*CellStackPtr)->cellname, filenum);		/* Reopen */
-	 update = 1;
-      }
-
-      /* nexttok is now NULL, scan->name points to class */
-      multi = (ndev > 1) ? 1 : 0;
-      if (multi) strcat(instancename, ".");
-      while (ndev > 0) {
-         if (multi) {
-	    char *dotptr = strrchr(instancename, '.');
-	    sprintf(dotptr + 1, "%d", ndev);
-	 }
-         Instance(subcktname, instancename);
-	 LinkProperties(model, kvlist);
-	 ndev--;
-
-         /* (Diagnostic) */
-         /* Fprintf(stderr, "instancing subcell: %s (%s):", subcktname, instancename); */
-         /*
-         for (scan = head; scan != NULL; scan = scan->next)
-	   Fprintf(stderr," %s", scan->name);
-         Fprintf(stderr,"\n");
-         */
-      
-         obptr = LookupInstance(instancename, CurrentCell);
-         if (obptr != NULL) {
-           scan = head;
-	   if (scan != NULL)
-           do {
-	     if (LookupObject(scan->name, CurrentCell) == NULL) Node(scan->name);
-	     join(scan->name, obptr->name);
-	     obptr = obptr->next;
-	     scan = scan->next;
-           } while (obptr != NULL && obptr->type > FIRSTPIN && scan != NULL);
-
-           if ((obptr == NULL && scan != NULL) ||
-		(obptr != NULL && scan == NULL && obptr->type > FIRSTPIN)) {
-	     if (warnings <= 100) {
-	        Fprintf(stderr,"Parameter list mismatch in %s: ", instancename);
-
-	        if (obptr == NULL)
-		   Fprintf(stderr, "Too many parameters in call!\n");
-	        else if (scan == NULL)
-		   Fprintf(stderr, "Not enough parameters in call!\n");
-	        InputParseError(stderr);
-	        if (warnings == 100)
-	           Fprintf(stderr, "Too many warnings. . . will not report any more.\n");
-             }
-	     warnings++;
-	   }
-         }	// repeat over ndev
-      }
-      DeleteProperties(&kvlist);
-
-      /* free up the allocated list */
-      scan = head;
-      while (scan != NULL) {
-	scannext = scan->next;
-	FREE(scan->name);
-	FREE(scan);
-	scan = scannext;
-      }
-    }
     else if (matchnocase(nexttok, ".SUBCKT")) {
       SpiceTokNoNewline();
+      if (nexttok == NULL) {
+	 Fprintf(stderr, "Badly formed .subkt line\n");
+	 goto skip_ends;
+      }
+
+      if (in_subckt == (char)1) {
+	  Fprintf(stderr, "Missing .ENDS statement on subcircuit.\n");
+          InputParseError(stderr);
+      }
+      in_subckt = (char)1;
 
       /* Save pointer to current cell */
       if (CurrentCell != NULL)
@@ -1021,6 +550,10 @@ void ReadSpiceFile(char *fname, int filenum, struct cellstack **CellStackPtr)
 	 int n;
 	 char *ds;
 
+	 // NOTE:  Use this to ignore the new definition---should be
+	 // an option to netgen.
+	 /* goto skip_ends; */
+
 	 ds = strrchr(model, '[');
 	 if ((ds != NULL) && (*(ds + 1) == '['))
 	    sscanf(ds + 2, "%d", &n);
@@ -1030,29 +563,33 @@ void ReadSpiceFile(char *fname, int filenum, struct cellstack **CellStackPtr)
 	    n = -1;
 	 }
 
-	 Printf("Duplicate cell %s in file; renaming.\n", nexttok);
+	 Printf("Duplicate cell %s in file\n", nexttok);
+	 tp->flags |= CELL_DUPLICATE;
          while (tp != NULL) {
 	    n++;
 	    /* Append "[[n]]" to the preexisting model name to force uniqueness */
 	    sprintf(ds, "[[%d]]", n);
             tp = LookupCellFile(model, filenum);
 	 }
+	 Printf("Renaming original cell to %s\n", model);
 	 InstanceRename(nexttok, model, filenum);
 	 CellRehash(nexttok, model, filenum);
-         CellDefNoCase(nexttok, filenum);
+         CellDef(nexttok, filenum);
          tp = LookupCellFile(nexttok, filenum);
       }
       else if (tp != NULL) {	/* Make a new definition for an empty cell */
 	 FreePorts(nexttok);
-	 CellDelete(nexttok, filenum);
-	 CellDefNoCase(model, filenum);
+	 CellDelete(nexttok, filenum);	/* This removes any PLACEHOLDER flag */
+	 CellDef(model, filenum);
 	 tp = LookupCellFile(model, filenum);
+	 update = 1;	/* Will need to update existing instances */
       }
       else if (tp == NULL) {	/* Completely new cell, no name conflict */
-         CellDefNoCase(model, filenum);
+         CellDef(model, filenum);
          tp = LookupCellFile(model, filenum);
       }
 
+      hasports = 0;
       if (tp != NULL) {
 
 	 PushStack(tp->name, CellStackPtr);
@@ -1078,29 +615,33 @@ void ReadSpiceFile(char *fname, int filenum, struct cellstack **CellStackPtr)
 		continue;
 	    }
 
-	    if ((eqptr = strchr(nexttok, '=')) != NULL)
-	    {
+	    if ((eqptr = strchr(nexttok, '=')) != NULL) {
 		*eqptr = '\0';
-		PropertyString(nexttok, 0);	// Only String properties allowed
-
-		// Save default values in a property list
-		AddProperty(&kvlist, nexttok, eqptr + 1);
+		// Only String properties allowed
+		PropertyString(tp->name, filenum, nexttok, 0, eqptr + 1);
 	    }
-	    else
+	    else {
 		Port(nexttok);
-
+		hasports = 1;
+	    }
 	    SpiceTokNoNewline();
          }
-         SetClass(CLASS_SUBCKT);
-	 LinkProperties(model, kvlist);
-	 DeleteProperties(&kvlist);
+	 SetClass((blackbox) ? CLASS_MODULE : CLASS_SUBCKT);
+
+	 if (hasports == 0) {
+	    // If the cell defines no ports, then create a proxy
+	    Port((char *)NULL);
+	 }
 
 	 /* Copy all global nodes from parent into child cell */
 	 for (sobj = parent; sobj != NULL; sobj = sobj->next) {
-	    if (IsGlobal(sobj->type)) {
+	    if (IsGlobal(sobj)) {
 	       Global(sobj->name);
 	    }
 	 }
+
+	 /* In the blackbox case, don't read the cell contents	*/
+	 if (blackbox) goto skip_ends;
       }
       else {
 
@@ -1110,60 +651,29 @@ skip_ends:
 
 	 while (1) {
 	    SpiceSkipNewLine();
-	    SkipTok();
+	    SkipTok(NULL);
 	    if (EndParseFile()) break;
-	    if (matchnocase(nexttok, ".ENDS")) break;
+	    if (matchnocase(nexttok, ".ENDS")) {
+	       in_subckt = 0;
+	       break;
+	    }
 	 }
       }
     }
     else if (matchnocase(nexttok, ".ENDS")) {
-      /* If any pins are marked unconnected, see if there are	*/
-      /* other pins of the same name that have connections.	*/
-      /* Also remove any unconnected globals (just for cleanup) */
 
-      lobj = NULL;
-      for (sobj = CurrentCell->cell; sobj != NULL;) {
-	 nobj = sobj->next;
-	 if (sobj->node < 0) {
-	    if (IsGlobal(sobj->type)) {
-	       if (lobj != NULL)
-	          lobj->next = sobj->next;
-	       else
-	          CurrentCell->cell = sobj->next;
-	       FreeObjectAndHash(sobj, CurrentCell);
-	    }
-	    else if (IsPort(sobj->type)) {
-		for (pobj = CurrentCell->cell; pobj && (pobj->type == PORT);
-			pobj = pobj->next) {
-		    if (pobj == sobj) continue;
-		    if (matchnocase(pobj->name, sobj->name) && pobj->node >= 0) {
-			sobj->node = pobj->node;
-			break;
-		    }
-		}
-		lobj = sobj;
-	    }
-	    else
-		lobj = sobj;
-	 }
-	 else
-	    lobj = sobj;
-	 sobj = nobj;
-      }
-
+      CleanupSubcell();
       EndCell();
 
-      // This condition will be true if no nodes or components were
-      // created in the top-level cell before the first subcircuit
-      // definition, so it is not necessarily an error. . .
-
-      // if (*(CellStackPtr) && ((*CellStackPtr)->next == NULL))
-      //    Printf(".ENDS encountered outside of a subcell.\n");
-      // else
+      if (in_subckt == (char)0) {
+	  Fprintf(stderr, ".ENDS occurred outside of a subcircuit!\n");
+          InputParseError(stderr);
+      }
+      in_subckt = (char)0;
 
       if (*CellStackPtr) PopStack(CellStackPtr);
       if (*CellStackPtr) ReopenCellDef((*CellStackPtr)->cellname, filenum);
-      SkipNewLine();
+      SkipNewLine(NULL);
     }
     else if (matchnocase(nexttok, ".MODEL")) {
       unsigned char class = CLASS_SUBCKT;
@@ -1175,8 +685,10 @@ skip_ends:
       /* statements, the "equate classes" command must be used.		*/
 
       SpiceTokNoNewline();
+      if (nexttok == NULL) continue;	/* Ignore if no model name */
       snprintf(model, 99, "%s", nexttok);
       SpiceTokNoNewline();
+      if (nexttok == NULL) goto baddevice;
 
       if (!strcasecmp(nexttok, "NMOS")) {
 	 class = CLASS_NMOS;
@@ -1189,6 +701,21 @@ skip_ends:
       }
       else if (!strcasecmp(nexttok, "NPN")) {
 	 class = CLASS_NPN;
+      }
+      else if (!strcasecmp(nexttok, "NPN")) {
+	 class = CLASS_NPN;
+      }
+      else if (!strcasecmp(nexttok, "D")) {
+	 class = CLASS_DIODE;
+      }
+      else if (!strcasecmp(nexttok, "R")) {
+	 class = CLASS_RES;
+      }
+      else if (!strcasecmp(nexttok, "C")) {
+	 class = CLASS_CAP;
+      }
+      else if (!strcasecmp(nexttok, "L")) {
+	 class = CLASS_INDUCTOR;
       }
 
       /* Convert class of "model" to "class" */
@@ -1218,7 +745,7 @@ skip_ends:
          if (numnodes == 0) {
 	    // If there is no current cell, make one
 	    if (!(*CellStackPtr)) {
-	       CellDefNoCase(fname, filenum);
+	       CellDef(fname, filenum);
 	       PushStack(fname, CellStackPtr);
 	    }
 	    Global(nexttok);
@@ -1227,9 +754,10 @@ skip_ends:
       SpiceSkipNewLine();
     }
     else if (matchnocase(nexttok, ".INCLUDE")) {
-      char *iname, *iptr, *quotptr, *pathend;
+      char *iname, *iptr, *quotptr, *pathend, *userpath = NULL;
 
       SpiceTokNoNewline();
+      if (nexttok == NULL) continue;	/* Ignore if no filename */
 
       // Any file included in another SPICE file needs to be
       // interpreted relative to the path of the parent SPICE file,
@@ -1238,12 +766,44 @@ skip_ends:
       pathend = strrchr(fname, '/');
       iptr = nexttok;
       while (*iptr == '\'' || *iptr == '\"' || *iptr == '`') iptr++;
-      if ((pathend != NULL) && (*iptr != '/')) {
+      if ((pathend != NULL) && (*iptr != '/') && (*iptr != '~')) {
 	 *pathend = '\0';
 	 iname = (char *)MALLOC(strlen(fname) + strlen(iptr) + 2);
 	 sprintf(iname, "%s/%s", fname, iptr);
 	 *pathend = '/';
       }
+#ifndef IBMPC
+      else if ((*iptr == '~') && (*(iptr + 1) == '/')) {
+	 /* For ~/<path>, substitute tilde from $HOME */
+	 userpath = getenv("HOME");
+	 iname = (char *)MALLOC(strlen(userpath) + strlen(iptr));
+	 sprintf(iname, "%s%s", userpath, iptr + 1);
+      }
+      else if (*iptr == '~') {
+	 /* For ~<user>/<path>, substitute tilde from getpwnam() */
+	 struct passwd *passwd;
+	 char *pathstart;
+         pathstart = strchr(iptr, '/');
+	 if (pathstart) *pathstart = '\0';
+	 passwd = getpwnam(iptr + 1);
+	 if (passwd != NULL) {
+	    userpath = passwd->pw_dir;
+	    if (pathstart) {
+	       *pathstart = '/';
+	       iname = (char *)MALLOC(strlen(userpath) + strlen(pathstart) + 1);
+	       sprintf(iname, "%s%s", userpath, pathstart);
+	    }
+	    else {
+	       /* Almost certainly an error, but make the substitution anyway */
+	       iname = STRDUP(userpath);
+	    }
+	 }
+	 else {
+	    /* Probably an error, but copy the filename verbatim */
+	    iname = STRDUP(iptr);
+	 }
+      }
+#endif
       else
 	 iname = STRDUP(iptr);
 
@@ -1254,14 +814,996 @@ skip_ends:
 		*quotptr != '\0' && *quotptr != '\n') quotptr++;
       if (*quotptr == '\'' || *quotptr == '\"' || *quotptr == '`') *quotptr = '\0';
 	
-      IncludeSpice(iptr, filenum, CellStackPtr);
+      IncludeSpice(iptr, filenum, CellStackPtr, blackbox);
       FREE(iname);
       SpiceSkipNewLine();
+    }
+
+    else if (matchnocase(nexttok, ".PARAM")) {
+
+      // Pick up key:value pairs and store in current cell
+      while (nexttok != NULL)
+      {
+	 /* Parse for parameters used in expressions.  Save	*/
+	 /* parameters in the "spiceparams" hash table.		*/
+
+	 SpiceTokNoNewline();
+	 if ((nexttok == NULL) || (nexttok[0] == '\0')) break;
+	 if ((eqptr = strchr(nexttok, '=')) != NULL)
+	 {
+	    struct property *kl = NULL;
+
+	    *eqptr = '\0';
+	    kl = NewProperty();
+	    kl->key = strsave(nexttok);
+	    kl->idx = 0;
+	    kl->type = PROP_STRING;
+	    kl->slop.dval = 0.0;
+	    kl->pdefault.string = strsave(eqptr + 1);
+	    HashPtrInstall(nexttok, kl, &spiceparams);
+	 }
+      }
+    }
+
+    // Blackbox (library) mode---parse only subcircuits and models;
+    // ignore all components.
+
+    else if (blackbox) {
+      SpiceSkipNewLine();
+    }
+
+    else if (toupper(nexttok[0]) == 'Q') {
+      char emitter[100], base[100], collector[100];
+      emitter[99] = '\0';
+      base[99] = '\0';
+      collector[99] = '\0';
+
+      if (!(*CellStackPtr)) {
+	CellDef(fname, filenum);
+	PushStack(fname, CellStackPtr);
+      }
+      strncpy(inst, nexttok + 1, 99); SpiceTokNoNewline(); 
+      if (nexttok == NULL) goto baddevice;
+      strncpy(collector, nexttok, 99); SpiceTokNoNewline();
+      if (nexttok == NULL) goto baddevice;
+      strncpy(base, nexttok, 99);   SpiceTokNoNewline();
+      if (nexttok == NULL) goto baddevice;
+      strncpy(emitter, nexttok, 99);  SpiceTokNoNewline();
+      /* make sure all the nodes exist */
+      if (LookupObject(collector, CurrentCell) == NULL) Node(collector);
+      if (LookupObject(base, CurrentCell) == NULL) Node(base);
+      if (LookupObject(emitter, CurrentCell) == NULL) Node(emitter);
+
+      /* Read the device model */
+      snprintf(model, 99, "%s", nexttok);
+
+      while (nexttok != NULL)
+      {
+	 /* Parse for M and other parameters */
+
+	 SpiceTokNoNewline();
+	 if ((nexttok == NULL) || (nexttok[0] == '\0')) break;
+	 if ((eqptr = strchr(nexttok, '=')) != NULL)
+	 {
+	    *eqptr = '\0';
+	    AddProperty(&kvlist, nexttok, eqptr + 1);
+	 }
+      }
+
+      if (LookupCellFile(model, filenum) == NULL) {
+	 CellDef(model, filenum);
+	 Port("collector");
+	 Port("base");
+	 Port("emitter");
+	 PropertyInteger(model, filenum, "M", 0, 1);
+	 SetClass(CLASS_BJT);
+         EndCell();
+	 ReopenCellDef((*CellStackPtr)->cellname, filenum);	/* Reopen */
+      }
+      else if (CountPorts(model, filenum) != 3) {
+	 /* Modeled device:  Make sure it has the right number of ports */
+	 Fprintf(stderr, "Device \"%s\" has wrong number of ports for a BJT.\n");
+	 goto baddevice;
+      }
+
+      snprintf(instname, 255, "%s%s", model, inst);
+      Cell(instname, model, collector, base, emitter);
+      pobj = LinkProperties(model, kvlist);
+      ReduceExpressions(pobj, NULL, CurrentCell, TRUE);
+      DeleteProperties(&kvlist);
+    }
+    else if (toupper(nexttok[0]) == 'M') {
+      char drain[100], gate[100], source[100], bulk[100];
+      drain[99] = '\0';
+      gate[99] = '\0';
+      source[99] = '\0';
+      bulk[99] = '\0';
+
+      if (!(*CellStackPtr)) {
+	CellDef(fname, filenum);
+	PushStack(fname, CellStackPtr);
+      }
+      strncpy(inst, nexttok + 1, 99); SpiceTokNoNewline(); 
+      if (nexttok == NULL) goto baddevice;
+      strncpy(drain, nexttok, 99);  SpiceTokNoNewline();
+      if (nexttok == NULL) goto baddevice;
+      strncpy(gate, nexttok, 99);   SpiceTokNoNewline();
+      if (nexttok == NULL) goto baddevice;
+      strncpy(source, nexttok, 99); SpiceTokNoNewline();
+      if (nexttok == NULL) goto baddevice;
+      /* make sure all the nodes exist */
+      if (LookupObject(drain, CurrentCell) == NULL) Node(drain);
+      if (LookupObject(gate, CurrentCell) == NULL) Node(gate);
+      if (LookupObject(source, CurrentCell) == NULL) Node(source);
+
+      /* handle the substrate node */
+      strncpy(bulk, nexttok, 99); SpiceTokNoNewline();
+      if (LookupObject(bulk, CurrentCell) == NULL) Node(bulk);
+
+      /* Read the device model */
+      snprintf(model, 99, "%s", nexttok);
+
+      while (nexttok != NULL)
+      {
+	 /* Parse for parameters; treat "M" separately */
+
+	 SpiceTokNoNewline();
+	 if ((nexttok == NULL) || (nexttok[0] == '\0')) break;
+	 if ((eqptr = strchr(nexttok, '=')) != NULL)
+	 {
+	    *eqptr = '\0';
+	    AddProperty(&kvlist, nexttok, eqptr + 1);
+	 }
+      }
+
+      /* Treat each different model name as a separate device class	*/
+      /* The model name is prefixed with "M/" so that we know this is a	*/
+      /* SPICE transistor.						*/
+
+      if (LookupCellFile(model, filenum) == NULL) {
+	 CellDef(model, filenum);
+	 Port("drain");
+	 Port("gate");
+	 Port("source");
+	 Port("bulk");
+	 PropertyDouble(model, filenum, "L", 0.01, 0.0);
+	 PropertyDouble(model, filenum, "W", 0.01, 0.0);
+	 PropertyInteger(model, filenum, "M", 0, 1);
+	 SetClass(CLASS_FET);
+         EndCell();
+	 ReopenCellDef((*CellStackPtr)->cellname, filenum);	/* Reopen */
+      }
+      else if (CountPorts(model, filenum) != 4) {
+	 /* Modeled device:  Make sure it has the right number of ports */
+	 Fprintf(stderr, "Device \"%s\" has wrong number of ports for a MOSFET.\n");
+	 goto baddevice;
+      }
+
+      snprintf(instname, 255, "%s%s", model, inst);
+      Cell(instname, model, drain, gate, source, bulk);
+      pobj = LinkProperties(model, kvlist);
+      ReduceExpressions(pobj, NULL, CurrentCell, TRUE);
+      DeleteProperties(&kvlist);
+      SpiceSkipNewLine();
+    }
+    else if (toupper(nexttok[0]) == 'C') {	/* 2-port capacitors */
+      int usemodel = 0;
+
+      if (IgnoreRC) {
+	 SpiceSkipNewLine();
+      }
+      else {
+        char ctop[100], cbot[100];
+        ctop[99] = '\0';
+        cbot[99] = '\0';
+
+        if (!(*CellStackPtr)) {
+	  CellDef(fname, filenum);
+	  PushStack(fname, CellStackPtr);
+        }
+        strncpy(inst, nexttok + 1, 99); SpiceTokNoNewline(); 
+        if (nexttok == NULL) goto baddevice;
+        strncpy(ctop, nexttok, 99); SpiceTokNoNewline();
+        if (nexttok == NULL) goto baddevice;
+        strncpy(cbot, nexttok, 99); SpiceTokNoNewline();
+
+        /* make sure all the nodes exist */
+        if (LookupObject(ctop, CurrentCell) == NULL) Node(ctop);
+        if (LookupObject(cbot, CurrentCell) == NULL) Node(cbot);
+
+	/* Get capacitor value (if present), save as property "value" */
+	if (nexttok != NULL) {
+	   if (StringIsValueOrExpression(nexttok)) {
+	      AddProperty(&kvlist, "value", nexttok);
+	      SpiceTokNoNewline();
+	   }
+	}
+
+	/* Semiconductor (modeled) capacitor.  But first need to make	*/
+	/* sure that this does not start the list of parameters.	*/
+
+	model[0] = '\0';
+	if ((nexttok != NULL) && ((eqptr = strchr(nexttok, '=')) == NULL))
+	   snprintf(model, 99, "%s", nexttok);
+
+	/* Any other device properties? */
+        while (nexttok != NULL)
+        {
+	   SpiceTokNoNewline();
+	   if ((nexttok == NULL) || (nexttok[0] == '\0')) break;
+	   if ((eqptr = strchr(nexttok, '=')) != NULL) {
+	      *eqptr = '\0';
+	      AddProperty(&kvlist, nexttok, eqptr + 1);
+	   }
+	   else if (!strncmp(nexttok, "$[", 2)) {
+	      // Support for CDL modeled capacitor format
+	      snprintf(model, 99, "%s", nexttok + 2);
+	      if ((eqptr = strchr(model, ']')) != NULL)
+		 *eqptr = '\0';
+	   }
+	   else if (StringIsValueOrExpression(nexttok)) {
+		// Suport for value passed to modeled capacitor
+	        AddProperty(&kvlist, "value", nexttok);
+	   }
+	}
+
+	if (model[0] == '\0')
+	   strcpy(model, "c");		/* Use default capacitor model */
+	else
+	{
+	   if (LookupCellFile(model, filenum) == NULL) {
+	      CellDef(model, filenum);
+	      Port("top");
+	      Port("bottom");
+	      PropertyValue(model, filenum, "value", 0.01, 0.0);
+	      PropertyInteger(model, filenum, "M", 0, 1);
+	      SetClass(CLASS_CAP);
+              EndCell();
+	      ReopenCellDef((*CellStackPtr)->cellname, filenum);	/* Reopen */
+	   }
+           else if (CountPorts(model, filenum) != 2) {
+	      /* Modeled device:  Make sure it has the right number of ports */
+	      Fprintf(stderr, "Device \"%s\" has wrong number of ports for a "
+			"capacitor.\n");
+	      goto baddevice;
+           }
+	   usemodel = 1;
+	}
+
+	snprintf(instname, 255, "%s%s", model, inst);
+	if (usemodel)
+           Cell(instname, model, ctop, cbot);
+	else
+           Cap((*CellStackPtr)->cellname, instname, ctop, cbot);
+	pobj = LinkProperties(model, kvlist);
+	ReduceExpressions(pobj, NULL, CurrentCell, TRUE);
+	DeleteProperties(&kvlist);
+      }
+    }
+    else if (toupper(nexttok[0]) == 'R') {	/* 2-port resistors */
+      int usemodel = 0;
+
+      if (IgnoreRC) {
+	 SpiceSkipNewLine();
+      }
+      else {
+        char rtop[100], rbot[100];
+	rtop[99] = '\0';
+	rbot[99] = '\0';
+
+        if (!(*CellStackPtr)) {
+	  CellDef(fname, filenum);
+	  PushStack(fname, CellStackPtr);
+        }
+        strncpy(inst, nexttok + 1, 99); SpiceTokNoNewline(); 
+        if (nexttok == NULL) goto baddevice;
+        strncpy(rtop, nexttok, 99);  SpiceTokNoNewline();
+        if (nexttok == NULL) goto baddevice;
+        strncpy(rbot, nexttok, 99);   SpiceTokNoNewline();
+        /* make sure all the nodes exist */
+        if (LookupObject(rtop, CurrentCell) == NULL) Node(rtop);
+        if (LookupObject(rbot, CurrentCell) == NULL) Node(rbot);
+
+	/* Get resistor value (if present); save as property "value" */
+
+	if (nexttok != NULL) {
+	   if (StringIsValueOrExpression(nexttok)) {
+	      AddProperty(&kvlist, "value", nexttok);
+	      SpiceTokNoNewline();
+	   }
+        }
+
+	/* Semiconductor (modeled) resistor.  But first need to make	*/
+	/* sure that this does not start the list of parameters.	*/
+
+	model[0] = '\0';
+	if ((nexttok != NULL) && ((eqptr = strchr(nexttok, '=')) == NULL))
+	   snprintf(model, 99, "%s", nexttok);
+
+	/* Any other device properties? */
+        while (nexttok != NULL) {
+	   SpiceTokNoNewline();
+	   if ((nexttok == NULL) || (nexttok[0] == '\0')) break;
+	   if ((eqptr = strchr(nexttok, '=')) != NULL) {
+	      *eqptr = '\0';
+	       AddProperty(&kvlist, nexttok, eqptr + 1);
+	   }
+	   else if (!strncmp(nexttok, "$[", 2)) {
+	      // Support for CDL modeled resistor format
+	      snprintf(model, 99, "%s", nexttok + 2);
+	      if ((eqptr = strchr(model, ']')) != NULL)
+		 *eqptr = '\0';
+	   }
+	   else if (StringIsValueOrExpression(nexttok)) {
+		// Suport for value passed to modeled resistor
+	        AddProperty(&kvlist, "value", nexttok);
+	   }
+	}
+
+	if (model[0] != '\0')
+	{
+	   if (LookupCellFile(model, filenum) == NULL) {
+	      CellDef(model, filenum);
+	      Port("end_a");
+	      Port("end_b");
+	      PropertyValue(model, filenum, "value", 0.01, 0.0);
+	      PropertyInteger(model, filenum, "M", 0, 1);
+	      SetClass(CLASS_RES);
+              EndCell();
+	      ReopenCellDef((*CellStackPtr)->cellname, filenum);	/* Reopen */
+	   }
+           else if (CountPorts(model, filenum) != 2) {
+	      /* Modeled device:  Make sure it has the right number of ports */
+	      Fprintf(stderr, "Device \"%s\" has wrong number of ports for a "
+			"resistor.\n");
+	      goto baddevice;
+           }
+	   usemodel = 1;
+	}
+	else
+	   strcpy(model, "r");		/* Use default resistor model */
+
+	snprintf(instname, 255, "%s%s", model, inst);
+	if (usemodel)
+	   Cell(instname, model, rtop, rbot);
+	else
+           Res((*CellStackPtr)->cellname, instname, rtop, rbot);
+	pobj = LinkProperties(model, kvlist);
+	ReduceExpressions(pobj, NULL, CurrentCell, TRUE);
+	DeleteProperties(&kvlist);
+      }
+    }
+    else if (toupper(nexttok[0]) == 'D') {	/* diode */
+      char cathode[100], anode[100];
+      cathode[99] = '\0';
+      anode[99] = '\0';
+
+      if (!(*CellStackPtr)) {
+	CellDef(fname, filenum);
+	PushStack(fname, CellStackPtr);
+      }
+      strncpy(inst, nexttok + 1, 99); SpiceTokNoNewline(); 
+      if (nexttok == NULL) goto baddevice;
+      strncpy(anode, nexttok, 99);   SpiceTokNoNewline();
+      if (nexttok == NULL) goto baddevice;
+      strncpy(cathode, nexttok, 99); SpiceTokNoNewline();
+      /* make sure all the nodes exist */
+      if (LookupObject(anode, CurrentCell) == NULL) Node(anode);
+      if (LookupObject(cathode, CurrentCell) == NULL) Node(cathode);
+
+      /* Read the device model */
+      snprintf(model, 99, "%s", nexttok);
+
+      while (nexttok != NULL)
+      {
+	 /* Parse for M and other parameters */
+
+	 SpiceTokNoNewline();
+	 if ((nexttok == NULL) || (nexttok[0] == '\0')) break;
+	 if ((eqptr = strchr(nexttok, '=')) != NULL)
+	 {
+	    *eqptr = '\0';
+	    AddProperty(&kvlist, nexttok, eqptr + 1);
+	 }
+      }
+
+      if (LookupCellFile(model, filenum) == NULL) {
+	 CellDef(model, filenum);
+	 Port("anode");
+	 Port("cathode");
+         PropertyInteger(model, filenum, "M", 0, 1);
+	 SetClass(CLASS_DIODE);
+         EndCell();
+	 ReopenCellDef((*CellStackPtr)->cellname, filenum);	/* Reopen */
+      }
+      else if (CountPorts(model, filenum) != 2) {
+	 /* Modeled device:  Make sure it has the right number of ports */
+	 Fprintf(stderr, "Device \"%s\" has wrong number of ports for a diode.\n");
+	 goto baddevice;
+      }
+      snprintf(instname, 255, "%s%s", model, inst);
+      Cell(instname, model, anode, cathode);
+      pobj = LinkProperties(model, kvlist);
+      ReduceExpressions(pobj, NULL, CurrentCell, TRUE);
+      DeleteProperties(&kvlist);
+    }
+    else if (toupper(nexttok[0]) == 'T') {	/* transmission line */
+      int usemodel = 0;
+
+      if (IgnoreRC) {
+	 SpiceSkipNewLine();
+      }
+      else {
+        char node1[100], node2[100], node3[100], node4[100];
+	node1[99] = '\0';
+	node2[99] = '\0';
+	node3[99] = '\0';
+	node4[99] = '\0';
+
+        if (!(*CellStackPtr)) {
+	  CellDef(fname, filenum);
+	  PushStack(fname, CellStackPtr);
+        }
+        strncpy(inst, nexttok + 1, 99); SpiceTokNoNewline(); 
+        if (nexttok == NULL) goto baddevice;
+        strncpy(node1, nexttok, 99);  SpiceTokNoNewline();
+        if (nexttok == NULL) goto baddevice;
+        strncpy(node2, nexttok, 99);   SpiceTokNoNewline();
+        if (nexttok == NULL) goto baddevice;
+        strncpy(node3, nexttok, 99);   SpiceTokNoNewline();
+        if (nexttok == NULL) goto baddevice;
+        strncpy(node4, nexttok, 99);   SpiceTokNoNewline();
+        /* make sure all the nodes exist */
+        if (LookupObject(node1, CurrentCell) == NULL) Node(node1);
+        if (LookupObject(node2, CurrentCell) == NULL) Node(node2);
+        if (LookupObject(node3, CurrentCell) == NULL) Node(node3);
+        if (LookupObject(node4, CurrentCell) == NULL) Node(node4);
+
+	/* Lossy (modeled) transmission line.  But first need to make	*/
+	/* sure that this does not start the list of parameters.	*/
+
+	model[0] = '\0';
+	if ((nexttok != NULL) && ((eqptr = strchr(nexttok, '=')) == NULL))
+	   snprintf(model, 99, "%s", nexttok);
+
+	/* Any other device properties? */
+        while (nexttok != NULL) {
+	   SpiceTokNoNewline();
+	   if ((nexttok == NULL) || (nexttok[0] == '\0')) break;
+	   if ((eqptr = strchr(nexttok, '=')) != NULL) {
+	      *eqptr = '\0';
+	      AddProperty(&kvlist, nexttok, eqptr + 1);
+	   }
+	}
+
+	if (model[0] != '\0')
+	{
+	   if (LookupCellFile(model, filenum) == NULL) {
+	      CellDef(model, filenum);
+	      Port("node1");
+	      Port("node2");
+	      Port("node3");
+	      Port("node4");
+	      PropertyInteger(model, filenum, "M", 0, 1);
+	      SetClass(CLASS_XLINE);
+              EndCell();
+	      ReopenCellDef((*CellStackPtr)->cellname, filenum);	/* Reopen */
+	   }
+           else if (CountPorts(model, filenum) != 4) {
+	      /* Modeled device:  Make sure it has the right number of ports */
+	      Fprintf(stderr, "Device \"%s\" has wrong number of ports for a "
+			"transmission line.\n");
+	      goto baddevice;
+           }
+	   usemodel = 1;
+	}
+	else
+	   strcpy(model, "t");		/* Use default xline model */
+
+	snprintf(instname, 255, "%s%s", model, inst);
+
+	if (usemodel)
+	   Cell(instname, model, node1, node2, node3, node4);
+	else
+           XLine((*CellStackPtr)->cellname, instname, node1, node2,
+			node3, node4);
+	pobj = LinkProperties(model, kvlist);
+	ReduceExpressions(pobj, NULL, CurrentCell, TRUE);
+	DeleteProperties(&kvlist);
+      }
+    }
+    else if (toupper(nexttok[0]) == 'L') {	/* inductor */
+      char end_a[100], end_b[100];
+      int usemodel = 0;
+      end_a[99] = '\0';
+      end_b[99] = '\0';
+
+      if (!(*CellStackPtr)) {
+	CellDef(fname, filenum);
+	PushStack(fname, CellStackPtr);
+      }
+      strncpy(inst, nexttok + 1, 99); SpiceTokNoNewline(); 
+      if (nexttok == NULL) goto baddevice;
+      strncpy(end_a, nexttok, 99);   SpiceTokNoNewline();
+      if (nexttok == NULL) goto baddevice;
+      strncpy(end_b, nexttok, 99); SpiceTokNoNewline();
+      /* make sure all the nodes exist */
+      if (LookupObject(end_a, CurrentCell) == NULL) Node(end_a);
+      if (LookupObject(end_b, CurrentCell) == NULL) Node(end_b);
+
+      /* Get inductance value (if present); save as property "value" */
+
+      if (nexttok != NULL) {
+	  if (StringIsValueOrExpression(nexttok)) {
+	      AddProperty(&kvlist, "value", nexttok);
+	      SpiceTokNoNewline();
+	  }
+      }
+	
+      /* Semiconductor (modeled) inductor.  But first need to make	*/
+      /* sure that this does not start the list of parameters.	*/
+
+      model[0] = '\0';
+      if ((nexttok != NULL) && ((eqptr = strchr(nexttok, '=')) == NULL))
+	  snprintf(model, 99, "%s", nexttok);
+
+      /* Any other device properties? */
+      while (nexttok != NULL)
+      {
+	 /* Parse for M and other parameters */
+
+	 SpiceTokNoNewline();
+	 if ((nexttok == NULL) || (nexttok[0] == '\0')) break;
+	 if ((eqptr = strchr(nexttok, '=')) != NULL)
+	 {
+	    *eqptr = '\0';
+	    AddProperty(&kvlist, nexttok, eqptr + 1);
+	 }
+      }
+
+      if (model[0] != '\0')
+      {
+	 if (LookupCellFile(model, filenum) == NULL) {
+	    CellDef(model, filenum);
+	    Port("end_a");
+	    Port("end_b");
+	    PropertyInteger(model, filenum, "M", 0, 1);
+	    SetClass(CLASS_INDUCTOR);
+            EndCell();
+	    ReopenCellDef((*CellStackPtr)->cellname, filenum);	/* Reopen */
+         }
+         else if (CountPorts(model, filenum) != 2) {
+	      /* Modeled device:  Make sure it has the right number of ports */
+	      Fprintf(stderr, "Device \"%s\" has wrong number of ports for an "
+			"inductor.\n");
+	      goto baddevice;
+         }
+	 usemodel = 1;
+      }
+      else
+	 strcpy(model, "l");		/* Use default inductor model */
+
+      snprintf(instname, 255, "%s%s", model, inst);
+      if (usemodel)
+	 Cell(instname, model, end_a, end_b);
+      else
+	 Inductor((*CellStackPtr)->cellname, instname, end_a, end_b);
+      pobj = LinkProperties(model, kvlist);
+      ReduceExpressions(pobj, NULL, CurrentCell, TRUE);
+      DeleteProperties(&kvlist);
+    }
+
+    /* The following SPICE components are treated as	*/
+    /* black-box subcircuits (class MODULE):  V, I, E	*/
+
+    else if (toupper(nexttok[0]) == 'V') {	/* voltage source */
+      char pos[100], neg[100];
+      pos[99] = '\0';
+      neg[99] = '\0';
+
+      if (!(*CellStackPtr)) {
+	CellDef(fname, filenum);
+	PushStack(fname, CellStackPtr);
+      }
+      strncpy(inst, nexttok + 1, 99); SpiceTokNoNewline(); 
+      if (nexttok == NULL) goto baddevice;
+      strncpy(pos, nexttok, 99);   SpiceTokNoNewline();
+      if (nexttok == NULL) goto baddevice;
+      strncpy(neg, nexttok, 99); SpiceTokNoNewline();
+      if (nexttok == NULL) goto baddevice;
+      /* make sure all the nodes exist */
+      if (LookupObject(pos, CurrentCell) == NULL) Node(pos);
+      if (LookupObject(neg, CurrentCell) == NULL) Node(neg);
+
+      /* Any device properties? */
+      while (nexttok != NULL)
+      {
+	 SpiceTokNoNewline();
+	 if ((nexttok == NULL) || (nexttok[0] == '\0')) break;
+	 if ((eqptr = strchr(nexttok, '=')) != NULL)
+	 {
+	    *eqptr = '\0';
+	    AddProperty(&kvlist, nexttok, eqptr + 1);
+	 }
+	 else if (StringIsValueOrExpression(nexttok)) {
+	    AddProperty(&kvlist, "value", nexttok);
+	    SpiceTokNoNewline();
+	 }
+      }
+      strcpy(model, "vsrc");		/* Default voltage source */
+      if (LookupCellFile(model, filenum) == NULL) {
+	 CellDef(model, filenum);
+	 Port("pos");
+	 Port("neg");
+	 PropertyInteger(model, filenum, "M", 0, 1);
+	 SetClass(CLASS_MODULE);
+         EndCell();
+	 ReopenCellDef((*CellStackPtr)->cellname, filenum);	/* Reopen */
+      }
+      else if (CountPorts(model, filenum) != 2) {
+	 /* Modeled device:  Make sure it has the right number of ports */
+	 Fprintf(stderr, "Device \"%s\" has wrong number of ports for a "
+			"voltage source.\n");
+	 goto baddevice;
+      }
+      Cell(instname, model, pos, neg);
+      pobj = LinkProperties(model, kvlist);
+      ReduceExpressions(pobj, NULL, CurrentCell, TRUE);
+      DeleteProperties(&kvlist);
+    }
+    else if (toupper(nexttok[0]) == 'I') {	/* current source */
+      char pos[100], neg[100];
+      pos[99] = '\0';
+      neg[99] = '\0';
+
+      if (!(*CellStackPtr)) {
+	CellDef(fname, filenum);
+	PushStack(fname, CellStackPtr);
+      }
+      strncpy(inst, nexttok + 1, 99); SpiceTokNoNewline(); 
+      if (nexttok == NULL) goto baddevice;
+      strncpy(pos, nexttok, 99);   SpiceTokNoNewline();
+      if (nexttok == NULL) goto baddevice;
+      strncpy(neg, nexttok, 99); SpiceTokNoNewline();
+      /* make sure all the nodes exist */
+      if (LookupObject(pos, CurrentCell) == NULL) Node(pos);
+      if (LookupObject(neg, CurrentCell) == NULL) Node(neg);
+
+      /* Any device properties? */
+      while (nexttok != NULL)
+      {
+	 SpiceTokNoNewline();
+	 if ((nexttok == NULL) || (nexttok[0] == '\0')) break;
+	 if ((eqptr = strchr(nexttok, '=')) != NULL)
+	 {
+	    *eqptr = '\0';
+	    AddProperty(&kvlist, nexttok, eqptr + 1);
+	 }
+	 else if (StringIsValueOrExpression(nexttok)) {
+	    AddProperty(&kvlist, "value", nexttok);
+	    SpiceTokNoNewline();
+	 }
+      }
+      strcpy(model, "isrc");		/* Default current source */
+      if (LookupCellFile(model, filenum) == NULL) {
+	 CellDef(model, filenum);
+	 Port("pos");
+	 Port("neg");
+	 PropertyInteger(model, filenum, "M", 0, 1);
+	 SetClass(CLASS_MODULE);
+         EndCell();
+	 ReopenCellDef((*CellStackPtr)->cellname, filenum);	/* Reopen */
+      }
+      else if (CountPorts(model, filenum) != 2) {
+	 /* Modeled device:  Make sure it has the right number of ports */
+	 Fprintf(stderr, "Device \"%s\" has wrong number of ports for a "
+			"current source.\n");
+	 goto baddevice;
+      }
+      Cell(instname, model, pos, neg);
+      pobj = LinkProperties(model, kvlist);
+      ReduceExpressions(pobj, NULL, CurrentCell, TRUE);
+      DeleteProperties(&kvlist);
+    }
+    else if (toupper(nexttok[0]) == 'E') {	/* controlled voltage source */
+      char pos[100], neg[100], ctrlp[100], ctrln[100];
+      pos[99] = '\0';
+      neg[99] = '\0';
+      ctrlp[99] = '\0';
+      ctrln[99] = '\0';
+
+      if (!(*CellStackPtr)) {
+	CellDef(fname, filenum);
+	PushStack(fname, CellStackPtr);
+      }
+      strncpy(inst, nexttok + 1, 99); SpiceTokNoNewline(); 
+      if (nexttok == NULL) goto baddevice;
+      strncpy(pos, nexttok, 99);   SpiceTokNoNewline();
+      if (nexttok == NULL) goto baddevice;
+      strncpy(neg, nexttok, 99); SpiceTokNoNewline();
+      if (nexttok == NULL) goto baddevice;
+      strncpy(ctrlp, nexttok, 99); SpiceTokNoNewline();
+      if (nexttok == NULL) goto baddevice;
+      strncpy(ctrln, nexttok, 99); SpiceTokNoNewline();
+
+      /* make sure all the nodes exist */
+      if (LookupObject(pos, CurrentCell) == NULL) Node(pos);
+      if (LookupObject(neg, CurrentCell) == NULL) Node(neg);
+      if (LookupObject(ctrlp, CurrentCell) == NULL) Node(neg);
+      if (LookupObject(ctrln, CurrentCell) == NULL) Node(neg);
+
+      /* Any device properties? */
+      while (nexttok != NULL)
+      {
+	 SpiceTokNoNewline();
+	 if ((nexttok == NULL) || (nexttok[0] == '\0')) break;
+	 if ((eqptr = strchr(nexttok, '=')) != NULL)
+	 {
+	    *eqptr = '\0';
+	    AddProperty(&kvlist, nexttok, eqptr + 1);
+	 }
+	 else if (StringIsValueOrExpression(nexttok)) {
+	    AddProperty(&kvlist, "value", nexttok);
+	    SpiceTokNoNewline();
+	 }
+      }
+      strcpy(model, "vcvs");		/* Default controlled voltage source */
+      if (LookupCellFile(model, filenum) == NULL) {
+	 CellDef(model, filenum);
+	 Port("pos");
+	 Port("neg");
+	 Port("ctrlp");
+	 Port("ctrln");
+	 PropertyInteger(model, filenum, "M", 0, 1);
+	 SetClass(CLASS_MODULE);
+         EndCell();
+	 ReopenCellDef((*CellStackPtr)->cellname, filenum);	/* Reopen */
+      }
+      else if (CountPorts(model, filenum) != 4) {
+	 /* Modeled device:  Make sure it has the right number of ports */
+	 Fprintf(stderr, "Device \"%s\" has wrong number of ports for a "
+			"controlled voltage source.\n");
+	 goto baddevice;
+      }
+      Cell(instname, model, pos, neg, ctrlp, ctrln);
+      pobj = LinkProperties(model, kvlist);
+      ReduceExpressions(pobj, NULL, CurrentCell, TRUE);
+      DeleteProperties(&kvlist);
+    }
+
+    else if (toupper(nexttok[0]) == 'X') {	/* subcircuit instances */
+      char instancename[100], subcktname[100];
+      int itype, in_props;
+
+      instancename[99] = '\0';
+      subcktname[99] = '\0';
+
+      struct portelement {
+	char *name;
+	struct portelement *next;
+      };
+
+      struct portelement *head, *tail, *scan, *scannext;
+      struct objlist *obptr;
+
+      snprintf(instancename, 99, "%s", nexttok + 1);
+      strncpy(instancename, nexttok + 1, 99);
+      if (!(*CellStackPtr)) {
+	CellDef(fname, filenum);
+	PushStack(fname, CellStackPtr);
+      }
+      
+      head = NULL;
+      tail = NULL;
+      SpiceTokNoNewline();
+      in_props = FALSE;
+      while (nexttok != NULL) {
+	/* must still be a node or a parameter */
+	struct portelement *new_port;
+
+	// CDL format compatibility:  Ignore "/" before the subcircuit name
+	if (matchnocase(nexttok, "/")) {
+           SpiceTokNoNewline();
+	   continue;
+	}
+	// And (why do they have to keep messing with a perfectly good syntax?!)
+	// prepended to the name without a space:
+	else if (*nexttok == '/') nexttok++;
+
+	// Ignore token called "PARAMS:"
+	if (!strcasecmp(nexttok, "PARAMS:")) {
+           SpiceTokNoNewline();
+	   continue;
+	}
+
+	// We need to look for parameters of the type "name=value" BUT
+	// we also need to make sure that what we think is a parameter
+	// is actually a circuit name with an equals sign character in it.
+
+	if (((eqptr = strchr(nexttok, '=')) != NULL) &&
+	    	((tp = LookupCellFile(nexttok, filenum)) == NULL))
+	{
+	    in_props = TRUE;
+	    *eqptr = '\0';
+	    AddProperty(&kvlist, nexttok, eqptr + 1);
+	}
+	else if (in_props == FALSE)
+	{
+	    new_port = (struct portelement *)CALLOC(1, sizeof(struct portelement));
+	    new_port->name = strsave(nexttok);
+	    if (head == NULL) head = new_port;
+	    else tail->next = new_port;
+	    new_port->next = NULL;
+	    tail = new_port;
+	}
+	else
+	{
+	    Fprintf(stderr, "Token \"%s\" is not a parameter!\n", nexttok);
+            InputParseError(stderr);
+	}
+	SpiceTokNoNewline();
+      }
+
+      /* find the last element of the list, which is not a port,
+         but the class type */
+      scan = head;
+      while (scan != NULL && scan->next != tail && scan->next != NULL)
+	 scan = scan->next;
+      tail = scan;
+      if (scan == NULL) goto baddevice;
+      if (scan->next != NULL) scan = scan->next;
+      tail->next = NULL;
+
+      /* Check for ignored class */
+
+      if ((itype = IsIgnored(subcktname, filenum)) == IGNORE_CLASS) {
+          Printf("Class '%s' instanced in input but is being ignored.\n", model);
+          return;
+      }
+
+      /* Check for shorted pins */
+
+      if ((itype == IGNORE_SHORTED) && (head != NULL)) {
+         unsigned char shorted = (unsigned char)1;
+         struct portelement *p;
+         for (p = head->next; p; p = p->next) {
+            if (strcasecmp(head->name, p->name))
+               shorted = (unsigned char)0;
+               break;
+         }
+         if (shorted == (unsigned char)1) {
+            Printf("Instance of '%s' is shorted, ignoring.\n", subcktname);
+	    while (head) {
+	       p = head->next;
+	       FREE(head);
+	       head = p;
+            }
+            return;
+         }
+      }
+
+      /* Create cell name and revise instance name based on the cell name */
+      /* For clarity, if "instancename" does not contain the cellname,	  */
+      /* then prepend the cellname to the instance name.  HOWEVER, if any */
+      /* netlist is using instancename/portname to name nets, then we	  */
+      /* will have duplicate node names with conflicting records.  So at  */
+      /* very least prepend an "/" to it. . .				  */
+
+      /* NOTE:  Previously an 'X' was prepended to the name, but this	  */
+      /* caused serious and common errors where, for example, the circuit */
+      /* defined cells NOR and XNOR, causing confusion between node	  */
+      /* names.								  */
+
+      if (strncmp(instancename, scan->name, strlen(scan->name))) {
+         snprintf(subcktname, 99, "%s%s", scan->name, instancename);
+         strcpy(instancename, subcktname);
+      }
+      else {
+         snprintf(subcktname, 99, "/%s", instancename);
+         strcpy(instancename, subcktname);
+      }
+      snprintf(subcktname, 99, "%s", scan->name);
+
+      if (scan == head) {
+	 head = NULL;
+	 Fprintf(stderr, "Warning:  Cell %s has no pins\n", scan->name);
+      }
+      FREE (scan->name);
+      FREE (scan);
+
+      /* Check that the subcell exists.  If not, print a warning and	*/
+      /* generate an empty subcircuit entry matching the call.		*/
+
+      tp = LookupCellFile(subcktname, filenum);
+      if (tp == NULL) {
+	 char defport[8];
+	 int i;
+
+	 Fprintf(stdout, "Call to undefined subcircuit %s\n"
+		"Creating placeholder cell definition.\n", subcktname);
+	 CellDef(subcktname, filenum);
+	 CurrentCell->flags |= CELL_PLACEHOLDER;
+         for (scan = head, i = 1; scan != NULL; scan = scan->next, i++) {
+	    sprintf(defport, "%d", i);	
+	    Port(defport);
+	 }
+	 if (head == NULL) {
+	    Port((char *)NULL);	// Must have something for pin 1
+	 }
+	 PropertyInteger(subcktname, filenum, "M", 0, 1);
+	 SetClass(CLASS_MODULE);
+         EndCell();
+	 ReopenCellDef((*CellStackPtr)->cellname, filenum);		/* Reopen */
+	 update = 1;
+      }
+
+      /* nexttok is now NULL, scan->name points to class */
+
+      Instance(subcktname, instancename);
+      pobj = LinkProperties(subcktname, kvlist);
+      ReduceExpressions(pobj, NULL, CurrentCell, TRUE);
+
+      /* (Diagnostic) */
+      /* Fprintf(stderr, "instancing subcell: %s (%s):", subcktname, instancename); */
+      /*
+         for (scan = head; scan != NULL; scan = scan->next)
+	    Fprintf(stderr," %s", scan->name);
+         Fprintf(stderr,"\n");
+      */
+      
+      obptr = LookupInstance(instancename, CurrentCell);
+      if (obptr != NULL) {
+         scan = head;
+	 if (scan != NULL)
+         do {
+	    if (LookupObject(scan->name, CurrentCell) == NULL) Node(scan->name);
+	    join(scan->name, obptr->name);
+	    obptr = obptr->next;
+	    scan = scan->next;
+         } while (obptr != NULL && obptr->type > FIRSTPIN && scan != NULL);
+
+         if ((obptr == NULL && scan != NULL) ||
+		(obptr != NULL && scan == NULL && obptr->type > FIRSTPIN)) {
+	     if (warnings <= 100) {
+	        Fprintf(stderr,"Parameter list mismatch in %s: ", instancename);
+
+	        if (obptr == NULL)
+		   Fprintf(stderr, "Too many parameters in call!\n");
+	        else if (scan == NULL)
+		   Fprintf(stderr, "Not enough parameters in call!\n");
+	        InputParseError(stderr);
+	        if (warnings == 100)
+	           Fprintf(stderr, "Too many warnings. . . will not report any more.\n");
+             }
+	     warnings++;
+	  }
+      }
+      DeleteProperties(&kvlist);
+
+      /* free up the allocated list */
+      scan = head;
+      while (scan != NULL) {
+	scannext = scan->next;
+	FREE(scan->name);
+	FREE(scan);
+	scan = scannext;
+      }
     }
     else if (matchnocase(nexttok, ".END")) {
       /* Well, don't take *my* word for it.  But we won't flag a warning. */
     }
     else {
+       int ntotal;
+       char *sstr;
+       ntotal = 0;
+       for (sstr = nexttok; *sstr != '\0'; sstr++) if (!isascii(*sstr)) ntotal++;
+       if ((int)(sstr - nexttok) < (ntotal << 2)) {
+           Fprintf(stderr, "Input file \"%s\" appears to be binary"
+      			". . . bailing out\n", fname);
+           while (*CellStackPtr) PopStack(CellStackPtr);
+           return;
+       }
+
       if (warnings <= 100) {
 	 Fprintf(stderr, "Ignoring line starting with token: %s\n", nexttok);
 	 InputParseError(stderr);
@@ -1271,7 +1813,26 @@ skip_ends:
       warnings++;
       SpiceSkipNewLine();
     }
+    continue;
+
+baddevice:
+    Fprintf(stderr, "Badly formed line in input.\n");
   }
+
+  /* Watch for bad ending syntax */
+
+  if (in_subckt == (char)1) {
+     Fprintf(stderr, "Missing .ENDS statement on subcircuit.\n");
+     InputParseError(stderr);
+  }
+
+  if (*(CellStackPtr)) {
+     CleanupSubcell();
+     EndCell();
+     if (*CellStackPtr) PopStack(CellStackPtr);
+     if (*CellStackPtr) ReopenCellDef((*CellStackPtr)->cellname, filenum);
+  }
+
   if (update != 0) RecurseCellFileHashTable(renamepins, filenum);
 
   if (warnings)
@@ -1283,17 +1844,21 @@ skip_ends:
 /* Top-level SPICE file read routine		*/
 /*----------------------------------------------*/
 
-char *ReadSpice(char *fname, int *fnum)
+char *ReadSpiceTop(char *fname, int *fnum, int blackbox)
 {
   struct cellstack *CellStack = NULL;
+  struct nlist *tp;
   int filenum;
 
-  if ((filenum = OpenParseFile(fname)) < 0) {
+  // Make sure CurrentCell is clear
+  CurrentCell = NULL;
+
+  if ((filenum = OpenParseFile(fname, *fnum)) < 0) {
     char name[100];
 
     SetExtension(name, fname, SPICE_EXTENSION);
-    if ((filenum = OpenParseFile(name)) < 0) {
-      Fprintf(stderr,"No file: %s\n",name);
+    if ((filenum = OpenParseFile(name, *fnum)) < 0) {
+      Fprintf(stderr,"Error in SPICE file read: No file %s\n",name);
       *fnum = filenum;
       return NULL;
     }    
@@ -1304,35 +1869,57 @@ char *ReadSpice(char *fname, int *fnum)
   matchintfunc = matchfilenocase;
   hashfunc = hashnocase;
 
+  InitializeHashTable(&spiceparams, OBJHASHSIZE);
+
   /* All spice files should start with a comment line,	*/
   /* but we won't depend upon it.  Any comment line	*/
   /* will be handled by the main SPICE file processing.	*/
 
-  ReadSpiceFile(fname, filenum, &CellStack);
+  ReadSpiceFile(fname, filenum, &CellStack, blackbox);
   CloseParseFile();
 
   // Cleanup
   while (CellStack != NULL) PopStack(&CellStack);
+
+  RecurseHashTable(&spiceparams, freeprop);
+  HashKill(&spiceparams);
 
   // Important:  If the file is a library, containing subcircuit
   // definitions but no components, then it needs to be registered
   // as an empty cell.  Otherwise, the filename is lost and cells
   // cannot be matched to the file!
 
-  if (LookupCellFile(fname, filenum) == NULL) CellDefNoCase(fname, filenum);
+  if (LookupCellFile(fname, filenum) == NULL) CellDef(fname, filenum);
 
-  // Make sure CurrentCell is clear
-  CurrentCell = NULL;
+  tp = LookupCellFile(fname, filenum);
+  if (tp) tp->flags |= CELL_TOP;
 
   *fnum = filenum;
   return fname;
 }
 
 /*--------------------------------------*/
+/* Wrappers for ReadSpiceTop() 		*/
+/*--------------------------------------*/
+
+char *ReadSpice(char *fname, int *fnum)
+{
+   return ReadSpiceTop(fname, fnum, 0);
+}
+
+/*--------------------------------------*/
+
+char *ReadSpiceLib(char *fname, int *fnum)
+{
+   return ReadSpiceTop(fname, fnum, 1);
+}
+
+/*--------------------------------------*/
 /* SPICE file include routine		*/
 /*--------------------------------------*/
 
-void IncludeSpice(char *fname, int parent, struct cellstack **CellStackPtr)
+void IncludeSpice(char *fname, int parent, struct cellstack **CellStackPtr,
+		int blackbox)
 {
   int filenum = -1;
   char name[256];
@@ -1349,7 +1936,7 @@ void IncludeSpice(char *fname, int parent, struct cellstack **CellStackPtr)
            strcpy(ppath + 1, fname);
 	else
            strcpy(name, fname);
-        filenum = OpenParseFile(name);
+        filenum = OpenParseFile(name, parent);
      }
   }
 
@@ -1358,20 +1945,23 @@ void IncludeSpice(char *fname, int parent, struct cellstack **CellStackPtr)
   /* executed).							*/
 
   if (filenum < 0) {
-     if ((filenum = OpenParseFile(fname)) < 0) {
+     if ((filenum = OpenParseFile(fname, parent)) < 0) {
 
 	/* If that fails, see if a standard SPICE extension	*/
-	/* helps.  But really, we're getting desperate at this	*/
-	/* point.						*/
+	/* helps, if the file didn't have an extension.  But	*/
+	/* really, we're getting desperate at this point.	*/
 
-        SetExtension(name, fname, SPICE_EXTENSION);
-        if ((filenum = OpenParseFile(name)) < 0) {
-           Fprintf(stderr,"No file: %s\n",name);
+	if (strchr(fname, '.') == NULL) {
+           SetExtension(name, fname, SPICE_EXTENSION);
+           filenum = OpenParseFile(name, parent);
+	}
+        if (filenum < 0) {
+           Fprintf(stderr,"Error in SPICE file include: No file %s\n",name);
            return;
         }    
      }
   }
-  ReadSpiceFile(fname, parent, CellStackPtr);
+  ReadSpiceFile(fname, parent, CellStackPtr, blackbox);
   CloseParseFile();
 }
 
@@ -1388,7 +1978,7 @@ void EsacapSubCell(struct nlist *tp, int IsSubCell)
     if (ob->type == FIRSTPIN) {
       struct nlist *tp2;
 
-      tp2 = LookupCellFile(ob->model, tp->file);
+      tp2 = LookupCellFile(ob->model.class, tp->file);
       if ((tp2 != NULL) && !(tp2->dumped) && (tp2->class == CLASS_SUBCKT)) 
 	EsacapSubCell(tp2, 1);
     }
@@ -1420,8 +2010,8 @@ void EsacapSubCell(struct nlist *tp, int IsSubCell)
     if (ob->type == FIRSTPIN) {
       int drain_node, gate_node, source_node;
       /* print out element, but special-case transistors */
-      if (match (ob->model, "n") || matchnocase(ob->model, "p")) {
-	FlushString("X%s ",ob->instance);
+      if (match (ob->model.class, "n") || matchnocase(ob->model.class, "p")) {
+	FlushString("X%s ",ob->instance.name);
 	/* note: this code is dependent on the order defined in Initialize()*/
 	gate_node = ob->node;
 	ob = ob->next;
@@ -1432,18 +2022,18 @@ void EsacapSubCell(struct nlist *tp, int IsSubCell)
 	/* write fake substrate connections: NSUB and PSUB */
 	/* write fake transistor sizes: NL, NW, PL and PW */
 	/* write fake transistor classes: NCHANNEL and PCHANNEL  */
-	if (matchnocase(ob->model, "n")) 
+	if (matchnocase(ob->model.class, "n")) 
 	  FlushString("NSUB)=SMOS(TYPE=NCHANNEL,W=NW,L=NL);\n");
 	else FlushString("PSUB)=SMOS(TYPE=PCHANNEL,W=PW,L=PL);\n");
       }
       else {
 	/* it must be a subckt */
-	FlushString("### BOGUS SUBCKT: X%s %d ", ob->instance, ob->node);
+	FlushString("### BOGUS SUBCKT: X%s %d ", ob->instance.name, ob->node);
 	while (ob->next != NULL && ob->next->type > FIRSTPIN) {
 	  ob = ob->next;
 	  FlushString("%d ",ob->node);
 	}
-	FlushString("X%s\n", ob->model);
+	FlushString("X%s\n", ob->model.class);
       }
     }
   }
