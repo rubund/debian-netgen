@@ -24,11 +24,28 @@ extern void CellDef(char *name, int file);
 extern void CellDefNoCase(char *name, int file);
 extern void EndCell(void);
 extern void Port(char *name);
+extern int CountPorts(char *name, int file);
 extern void SetClass(unsigned char class);
-extern void PropertyDouble(char *key, double slop);
-extern void PropertyInteger(char *key, int slop);
-extern void PropertyString(char *key, int range);
+extern struct property *PropertyValue(char *name, int fnum, char *key,
+		double slop, double pdefault);
+extern struct property *PropertyDouble(char *name, int fnum, char *key,
+		double slop, double pdefault);
+extern struct property *PropertyInteger(char *name, int fnum, char *key,
+		int slop, int pdefault);
+extern struct property *PropertyString(char *name, int fnum, char *key,
+		double slop, char *pdefault);
+extern int  PropertyDelete(char *name, int fnum, char *key);
+extern void SetParallelCombine(int value);
+extern int  PropertyTolerance(char *name, int fnum, char *key, int ival,
+		double dval);
+extern int  PropertyMerge(char *name, int fnum, char *key, int merge_type);
+extern void ResolveProperties(char *name1, int file1, char *name2, int file2);
 extern void CopyProperties(struct objlist *obj_to, struct objlist *obj_from);
+extern int PromoteProperty(struct property *, struct valuelist *);
+extern int SetPropertyDefault(struct property *, struct valuelist *);
+extern struct objlist *LinkProperties(char *model, struct keyvalue *topptr);
+extern int ReduceExpressions(struct objlist *instprop, struct objlist *parprops,
+		struct nlist *parent, int glob);
 extern void Node(char *name);
 extern void Global(char *name);
 extern void UniqueGlobal(char *name);
@@ -36,6 +53,15 @@ extern void Instance(char *model, char *instancename);
 extern void PortList(char *prefix, char *list_template);
 extern char *Cell(char *inststr, char *model, ...);
 extern int  IsIgnored(char *, int);
+
+extern int auto_blackbox;	/* For handling empty subcircuits */
+
+/* netcmp.c */
+extern struct nlist *LookupClassEquivalent(char *model, int file1, int file2);
+extern void AssignCircuits(char *name1, int file1, char *name2, int file2);
+
+/* flatten.c */
+extern int PrematchLists(char *, int, char *, int);
 
 /* Define (enumerate) various device classes, largely based on SPICE	*/
 /* model types, mixed with some ext/sim types.				*/
@@ -75,10 +101,11 @@ extern char *Res3(char *fname, char *inststr, char *, char *, char *);
 extern char *Cap(char *fname, char *inststr, char *, char *);
 extern char *Res(char *fname, char *inststr, char *, char *);
 extern char *XLine(char *fname, char *inststr, char *, char *, char *, char *);
+extern char *Inductor(char *fname, char *inststr, char *, char *);
 
-extern int StringIsValue(char *);
+extern int  StringIsValue(char *);
 extern char *ConvertParam(char *);
-extern double ConvertStringToFloat(char *);
+extern int  ConvertStringToFloat(char *, double *);
 extern char *ScaleStringFloatValue(char *, double);
 extern void join(char *node1, char *node2);
 extern void Connect(char *tplt1, char *tplt2);
@@ -87,9 +114,13 @@ extern void Array(char *Cell, int num);
 extern void ActelLib(void);
 extern void Flatten(char *name, int file);
 extern void FlattenInstancesOf(char *model, int file);
+extern int  flattenInstancesOf(char *model, int file, char *instance);
 extern void FlattenCurrent();
 extern void ConvertGlobals(char *name, int fnum);
+extern int  CleanupPins(char *name, int fnum);
 extern void ConnectAllNodes(char *model, int fnum);
+extern int  CombineParallel(char *model, int fnum);
+extern int  CombineSerial(char *model, int fnum);
 extern int  NoDisconnectedNodes;
 extern int  PropertyKeyMatch(char *, char *);
 extern int  PropertyValueMatch(char *, char *);
@@ -104,6 +135,7 @@ extern int IgnoreRC;	  /* set this to 1 to ignore capacitance and resistance */
 extern int NoOutput;      /* set this to 1 to disable stdout output */
 extern int Composition;	  /* direction of composition */
 extern int UnixWildcards; /* TRUE if *,?,{},[] only; false if full REGEXP */
+extern int GlobalParallelNone;	/* If TRUE, don't parallel combine any cells */
 /* magic internal flag to restrict searches to recently placed cells */
 extern int QuickSearch;
 /* does re"CellDef"ing a cell add to it or overwrite it??? */
@@ -116,12 +148,12 @@ char *Str(char *format, ...);
 extern void Initialize(void);
 extern void InitializeCommandLine(int argc, char **argv);
 #ifdef TCL_NETGEN
-extern void PrintAllElements(char *cell);
+extern void PrintAllElements(char *cell, int file);
 #else
 extern void PrintElement(char *cell, char *list_template);
 #endif
 extern void Fanout(char *cell, char *node, int filter);
-extern void PrintCell(char *name);
+extern void PrintCell(char *name, int file);
 extern void Query(void);
 
 /* this is defined in xnetgen.h */
@@ -144,7 +176,9 @@ extern char *ReadExtHier(char *fname, int *fnum);
 extern char *ReadExtFlat(char *fname, int *fnum);
 extern char *ReadSim(char *fname, int *fnum);
 extern char *ReadSpice(char *fname, int *fnum);
+extern char *ReadSpiceLib(char *fname, int *fnum);
 extern char *ReadNetgenFile (char *fname, int *fnum);
+extern char *ReadVerilog(char *fname, int *fnum);
 
 extern char *ReadNetlist(char *fname, int *fnum);
 

@@ -30,6 +30,10 @@ the Free Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. */
 #include <stdlib.h>   /* for calloc */
 #endif
 
+#ifdef TCL_NETGEN
+#include <tcl.h>
+#endif
+
 #include "netgen.h"
 #include "hash.h"
 #include "objlist.h"
@@ -73,8 +77,9 @@ extern char *SetExtension(char *buffer, char *path, char *extension)
   strcat(tmpbuf, extension);
 
   /* step 4: lower-case the entire name */
-  for (pt = tmpbuf; *pt != '\0'; pt++)
-    if (isupper(*pt)) *pt = tolower(*pt);
+  /* (Commented out because this is really stupid.) */
+  // for (pt = tmpbuf; *pt != '\0'; pt++)
+  //   if (isupper(*pt)) *pt = tolower(*pt);
 
   if (buffer != NULL) {
     strcpy(buffer, tmpbuf);
@@ -98,7 +103,7 @@ int IsPortInPortlist(struct objlist *ob, struct nlist *tp)
   if (!match(ob->name, NodeAlias(tp, ob))) return (0);
   node = ob->node;
   for (ob2 = tp->cell; ob2 != NULL; ob2 = ob2->next) 
-    if ((ob2->node == node) && IsPort(ob2->type)) return(1);
+    if ((ob2->node == node) && IsPort(ob2)) return(1);
   return (0);
 #else
   int isaport;
@@ -107,7 +112,7 @@ int IsPortInPortlist(struct objlist *ob, struct nlist *tp)
   isaport = 0;
   ob2 = tp->cell;
   while (ob2 != NULL) {
-    if ((ob2->node == ob->node) && IsPort(ob2->type)) isaport = 1;
+    if ((ob2->node == ob->node) && IsPort(ob2)) isaport = 1;
     ob2 = ob2->next;
   }
   return (isaport);
@@ -189,46 +194,135 @@ static struct filestack *OpenFiles = NULL;
 #define TOKEN_DELIMITER " \t\n\r"
 
 /*----------------------------------------------------------------------*/
-/* Get the next line of input from file "infile", and find the first	*/
-/* valid token.								*/
+/* TrimQuoted() ---							*/
+/* Remove spaces from inside single- or double-quoted strings.		*/
 /*----------------------------------------------------------------------*/
 
-void GetNextLine(void)
+void TrimQuoted(char *line)
+{
+    char *qstart, *qend, *lptr;
+    int slen;
+    int changed;
+
+    /* Single-quoted entries */
+    changed = TRUE;
+    lptr = line;
+    while (changed)
+    {
+	changed = FALSE;
+	qstart = strchr(lptr, '\'');
+	if (qstart)
+	{
+	    qend = strchr(qstart + 1, '\'');
+	    if (qend && (qend > qstart)) {
+		slen = strlen(lptr);
+		for (lptr = qstart + 1; lptr < qend; lptr++) {
+		    if (*lptr == ' ') {
+			memmove(lptr, lptr + 1, slen);
+			qend--;
+			changed = TRUE;
+		    }
+		}
+		lptr++;
+	    }
+	}
+    }
+
+    /* Double-quoted entries */
+    changed = TRUE;
+    lptr = line;
+    while (changed)
+    {
+	changed = FALSE;
+	qstart = strchr(lptr, '\"');
+	if (qstart)
+	{
+	    qend = strchr(qstart + 1, '\"');
+	    if (qend && (qend > qstart)) {
+		slen = strlen(lptr);
+		for (lptr = qstart + 1; lptr < qend; lptr++) {
+		    if (*lptr == ' ') {
+			memmove(lptr, lptr + 1, slen);
+			qend--;
+			changed = TRUE;
+		    }
+		}
+		lptr++;
+	    }
+	}
+    }
+
+}
+
+/*----------------------------------------------------------------------*/
+/* GetNextLineNoNewline()						*/
+/*									*/
+/* Fetch the next line, and grab the first token from the next line.	*/
+/* If there is no next token (next line is empty, and ends with a 	*/
+/* newline), then place NULL in nexttok.				*/
+/*									*/
+/*----------------------------------------------------------------------*/
+
+int GetNextLineNoNewline(char *delimiter)
 {
   char *newbuf;
-  do {
-    if (feof(infile)) return;
-    if (linesize == 0) {
+  int testc;
+
+  if (feof(infile)) return -1;
+
+  // This is more reliable than feof() ...
+  testc = getc(infile);
+  if (testc == -1) return -1;
+  ungetc(testc, infile); 
+
+  if (linesize == 0) {
 	/* Allocate memory for line */
 	linesize = 500;
-	line = MALLOC(linesize);
-	linetok = MALLOC(linesize);
-    }
-    fgets(line, linesize, infile);
-    while (strlen(line) == linesize - 1) {
-       newbuf = MALLOC(linesize + 500);
+	line = (char *)MALLOC(linesize);
+	linetok = (char *)MALLOC(linesize);
+  }
+  fgets(line, linesize, infile);
+  while (strlen(line) == linesize - 1) {
+       newbuf = (char *)MALLOC(linesize + 500);
        strcpy(newbuf, line);
        FREE(line);
        line = newbuf;
        fgets(line + linesize - 1, 501, infile);
        linesize += 500;
        FREE(linetok);
-       linetok = MALLOC(linesize);
-    }
-    linenum++;
-    strcpy(linetok, line);
-  } while ((nexttok = strtok(linetok, TOKEN_DELIMITER)) == NULL);
+       linetok = (char *)MALLOC(linesize);
+  }
+  linenum++;
+  strcpy(linetok, line);
+  TrimQuoted(linetok);
+
+  nexttok = strtok(linetok, delimiter);
+  return 0;
+}
+
+/*----------------------------------------------------------------------*/
+/* Get the next line of input from file "infile", and find the first	*/
+/* valid token.								*/
+/*----------------------------------------------------------------------*/
+
+void GetNextLine(char *delimiter)
+{
+    do {
+	if (GetNextLineNoNewline(delimiter) == -1) return;
+    } while (nexttok == NULL);
 }
 
 /*----------------------------------------------------------------------*/
 /* if nexttok is already NULL, force scanner to read new line		*/
 /*----------------------------------------------------------------------*/
 
-void SkipTok(void)
+void SkipTok(char *delimiter)
 {
-  if (nexttok != NULL && 
-      (nexttok = strtok(NULL, TOKEN_DELIMITER)) != NULL) return;
-  GetNextLine();
+    if (nexttok != NULL && 
+		(nexttok = strtok(NULL, (delimiter) ? delimiter : TOKEN_DELIMITER))
+		!= NULL)
+	return;
+    GetNextLine((delimiter) ? delimiter : TOKEN_DELIMITER);
 }
 
 /*----------------------------------------------------------------------*/
@@ -236,9 +330,9 @@ void SkipTok(void)
 /* must be preceeded by at least one call to SkipTok()			*/
 /*----------------------------------------------------------------------*/
 
-void SkipTokNoNewline(void)
+void SkipTokNoNewline(char *delimiter)
 {
-  nexttok = strtok(NULL, TOKEN_DELIMITER);
+  nexttok = strtok(NULL, (delimiter) ? delimiter : TOKEN_DELIMITER);
 }
 
 /*----------------------------------------------------------------------*/
@@ -246,29 +340,45 @@ void SkipTokNoNewline(void)
 /* first character only of the next line.  If "+", then it will pass	*/
 /* that token and find the next token;  otherwise, it backs up.		*/
 /* Must be preceeded by at least one call to SkipTok()			*/
+/*									*/
+/* Modified 3/17/2015 to handle the case where a line may be followed	*/
+/* by "+" (continuation line) but without anything on the continuation	*/
+/* line.  At each end-of-line, the next line must be checked for either	*/
+/* a continuation line or a valid token.				*/
+/*									*/
+/* Modified 3/30/2015 to include the condition where a comment line is	*/
+/* in the middle of a series of continuation lines.			*/
 /*----------------------------------------------------------------------*/
 
 void SpiceTokNoNewline(void)
 {
-  int contline;
+    int contline;
 
-  if ((nexttok = strtok(NULL, TOKEN_DELIMITER)) != NULL) return;
+    if ((nexttok = strtok(NULL, TOKEN_DELIMITER)) != NULL) return;
 
-  contline = getc(infile);
-  if (contline != '+') {
-     ungetc(contline, infile);
-     return;
-  }
-  GetNextLine();
+    while (nexttok == NULL) {
+	contline = getc(infile);
+	if (contline == '*') {
+	   GetNextLine(TOKEN_DELIMITER);
+	   SkipNewLine(NULL);
+	   continue;
+	}
+	else if (contline != '+') {
+	    ungetc(contline, infile);
+	    return;
+	}
+	if (GetNextLineNoNewline(TOKEN_DELIMITER) == -1) break;
+    }
 }
 
 /*----------------------------------------------------------------------*/
 /* skip to the end of the current line					*/
 /*----------------------------------------------------------------------*/
 
-void SkipNewLine(void)
+void SkipNewLine(char *delimiter)
 {
-  while (nexttok != NULL) nexttok = strtok(NULL, TOKEN_DELIMITER);
+    while (nexttok != NULL)
+	nexttok = strtok(NULL, (delimiter) ? delimiter : TOKEN_DELIMITER);
 }
 
 /*----------------------------------------------------------------------*/
@@ -280,13 +390,13 @@ void SpiceSkipNewLine(void)
 {
   int contline;
 
-  SkipNewLine();
+  SkipNewLine(NULL);
   contline = getc(infile);
 
   while (contline == '+') {
      ungetc(contline, infile);
-     GetNextLine();
-     SkipNewLine();
+     GetNextLine(TOKEN_DELIMITER);
+     SkipNewLine(NULL);
      contline = getc(infile);
   }
   ungetc(contline, infile);
@@ -308,7 +418,7 @@ void InputParseError(FILE *f)
 
 /*----------------------------------------------------------------------*/
 
-int OpenParseFile(char *name)
+int OpenParseFile(char *name, int fnum)
 {
   /* Push filestack */
   
@@ -320,9 +430,7 @@ int OpenParseFile(char *name)
   /* reset the token scanner */
   nexttok = NULL;  
 
-  if (locfile == NULL)
-     return -1;
-  else {
+  if (locfile != NULL) {
      if (infile != NULL) {
         newfile = (struct filestack *)MALLOC(sizeof(struct filestack));
         newfile->file = infile;
@@ -331,11 +439,14 @@ int OpenParseFile(char *name)
      }
      infile = locfile;
 
-     if (OpenFiles == NULL)
+     if (fnum != -1)
+	return fnum;
+     else if (OpenFiles == NULL)
         return Graph++;
      else
         return Graph;
   }
+  return -1;
 }
 
 int EndParseFile(void)
@@ -372,7 +483,7 @@ char *ReadNetlist(char *fname, int *fnum)
   };
   
 #ifdef mips
-  struct filetype formats[6];
+  struct filetype formats[7];
 
   formats[0].extension = NTK_EXTENSION;
   formats[0].proc = ReadNtk;
@@ -384,8 +495,10 @@ char *ReadNetlist(char *fname, int *fnum)
   formats[3].proc = ReadSpice;
   formats[4].extension = NETGEN_EXTENSION;
   formats[4].proc = ReadNetgenFile;
-  formats[5].extension = NULL;
-  formats[5].proc = NULL;
+  formats[5].extension = VERILOG_EXTENSION;
+  formats[5].proc = ReadVerilogFile;
+  formats[6].extension = NULL;
+  formats[6].proc = NULL;
 
 #else  /* not mips (i.e. compiler with reasonable initializers) */
   
@@ -397,6 +510,7 @@ char *ReadNetlist(char *fname, int *fnum)
       {SPICE_EXTENSION, ReadSpice},
       {SPICE_EXT2, ReadSpice},
       {SPICE_EXT3, ReadSpice},
+      {VERILOG_EXTENSION, ReadVerilog},
       {NETGEN_EXTENSION, ReadNetgenFile},
       {NULL, NULL}
     };
@@ -413,14 +527,14 @@ char *ReadNetlist(char *fname, int *fnum)
     char testname[200];
     strcpy(testname, fname);
     strcat(testname, formats[index].extension);
-    if (OpenParseFile(testname) >= 0) {
+    if (OpenParseFile(testname, *fnum) >= 0) {
       CloseParseFile();
       return (*(formats[index].proc))(testname, fnum);
     }
   }
 
   /* Check to see if file exists */
-  if (OpenParseFile(fname) >= 0) {
+  if (OpenParseFile(fname, *fnum) >= 0) {
     char test[3];
 
     /* SPICE files have many extensions.  Look for first character "*" */
@@ -473,7 +587,7 @@ void NetgenFileCell(char *name)
 
   /* check to see that all children have been dumped */
   for (ob = tp->cell; ob != NULL; ob = ob->next) {
-    tp2 = LookupCell(ob->model);
+    tp2 = LookupCell(ob->model.class);
     if ((tp2 != NULL) && !(tp2->dumped)) 
       NetgenFileCell(tp2->name);
   }
@@ -481,7 +595,7 @@ void NetgenFileCell(char *name)
   FlushString("Cell: %s\n", name);
   for (ob = tp->cell; ob != NULL; ob = ob->next) {
     FlushString("  %s %d %d ", ob->name, ob->node, ob->type);
-    if (ob->type >= FIRSTPIN) FlushString("%s %s",ob->model, ob->instance);
+    if (ob->type >= FIRSTPIN) FlushString("%s %s",ob->model.class, ob->instance.name);
     FlushString("\n");
   }
   FlushString("EndCell: %s\n\n", name);
@@ -519,10 +633,10 @@ char *ReadNetgenFile (char *fname, int *fnum)
   char *LastCellRead = NULL;
   int filenum;
 
-  if ((filenum = OpenParseFile(fname)) < 0) {
+  if ((filenum = OpenParseFile(fname, *fnum)) < 0) {
     SetExtension(name, fname, NETGEN_EXTENSION);
-    if ((filenum = OpenParseFile(name)) < 0) {
-      Printf("No file: %s\n",name);
+    if ((filenum = OpenParseFile(name, *fnum)) < 0) {
+      Printf("Error in netgen read: No file %s\n",name);
       *fnum = -1;
       return NULL;
     }    
@@ -551,17 +665,17 @@ char *ReadNetgenFile (char *fname, int *fnum)
 	fscanf(infile,"%d",&(ob->type));
 	if (ob->type >= FIRSTPIN) {
 	  fscanf(infile,"%400s",string);
-	  ob->model = strsave(string);
+	  ob->model.class = strsave(string);
 	  fscanf(infile,"%400s",string);
-	  ob->instance = strsave(string);
+	  ob->instance.name = strsave(string);
 	}
 	else {
-	  ob->model = strsave(" ");
-	  ob->instance = strsave(" ");
+	  ob->model.class = strsave(" ");
+	  ob->instance.name = strsave(" ");
 	}
 	if (ob->type == FIRSTPIN) {
-	  if (NULL == LookupCell(ob->model))
-	    Printf("WARING: instance of non-existant cell: %s\n", ob->model);
+	  if (NULL == LookupCell(ob->model.class))
+	    Printf("WARING: instance of non-existant cell: %s\n", ob->model.class);
 	  AddInstanceToCurrentCell(ob);
 	  CurrentCell->class = CLASS_SUBCKT;  /* there is at least one instance */
 	}
@@ -619,7 +733,7 @@ void NetgenFileCell(char *name)
 
   /* check to see that all children have been dumped */
   for (ob = tp->cell; ob != NULL; ob = ob->next) {
-    tp2 = LookupCell(ob->model);
+    tp2 = LookupCell(ob->model.class);
     if ((tp2 != NULL) && !(tp2->dumped)) 
       NetgenFileCell(tp2->name);
   }
@@ -636,12 +750,12 @@ void NetgenFileCell(char *name)
     write(File, &(ob->node), sizeof(ob->node));
     write(File, &(ob->type), sizeof(ob->type));
     if (ob->type >= FIRSTPIN) {
-      len = strlen(ob->model) + 1;
+      len = strlen(ob->model.class) + 1;
       write(File, &len, sizeof(len));
-      write(File, ob->model, len);    
-      len = strlen(ob->instance) + 1;
+      write(File, ob->model.class, len);    
+      len = strlen(ob->instance.name) + 1;
       write(File, &len, sizeof(len));
-      write(File, ob->instance, len);
+      write(File, ob->instance.name, len);
     }
   }
   len = END_OF_CELL;
@@ -685,7 +799,6 @@ char *readbuf;
 int bytes_in_buffer;
 char *bufptr;
 
-INLINE
 int READ(void *buf, int bytes)
 {
   if (bytes_in_buffer >= bytes) {
@@ -759,7 +872,7 @@ char *ReadNetgenFile (char *fname, int *fnum)
   if ((File = open(fname, O_RDONLY, FILE_ACCESS_BITS)) == -1) {
     SetExtension(name, fname, NETGEN_EXTENSION);
     if ((File = open(name, O_RDONLY, FILE_ACCESS_BITS)) == -1) {
-      Printf("No file: %s\n",name);
+      Printf("Error in netgen read: No file %s\n",name);
       return NULL;
     }    
   }
@@ -807,21 +920,21 @@ char *ReadNetgenFile (char *fname, int *fnum)
       if (ob->type >= FIRSTPIN) {
 	READ(&len, sizeof(len));
 	READ(string, len);
-	ob->model = (char *)MALLOC(len);
-	strcpy(ob->model,string);
+	ob->model.class = (char *)MALLOC(len);
+	strcpy(ob->model.class,string);
 	READ(&len, sizeof(len));
 	READ(string, len);
-	ob->instance = (char *)MALLOC(len);
-	strcpy(ob->instance,string);
+	ob->instance.name = (char *)MALLOC(len);
+	strcpy(ob->instance.name,string);
       }
       else {
-	ob->model = (char *)CALLOC(1,1);
-	ob->instance = (char *)CALLOC(1,1);  /* was strdup(" ") */
+	ob->model.class = (char *)CALLOC(1,1);
+	ob->instance.name = (char *)CALLOC(1,1);
       }
       if (ob->type == FIRSTPIN) {
-	if (NULL == LookupCell(ob->model))
+	if (NULL == LookupCell(ob->model.class))
 	  Printf("WARING: instance of non-existance cell: %s\n",
-		 ob->model);
+		 ob->model.class);
 	AddInstanceToCurrentCell(ob);
 	CurrentCell->class = CLASS_SUBCKT; /* there is at least one instance */
       }

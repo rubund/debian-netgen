@@ -195,7 +195,7 @@ void PrintObjectType(int type)
 	Printf("Properties");
 	break;
       case NODE:
-	Printf("Node");
+	Printf("Net");
 	break;
       default:
 	if (type < 0) 
@@ -227,7 +227,7 @@ void PrintElement(char *cell, char *list_template)
 	
   if (strlen(cell))  CurrentCell = LookupCell(cell);
   list = List(list_template);
-  Printf("Elements matching template: %s\n",list_template);
+  Printf("Devices matching template: %s\n",list_template);
   while (list != NULL) {
     Printf ("   %s\n",list->name);
     list = list->next;
@@ -241,17 +241,25 @@ void PrintElement(char *cell, char *list_template)
 /* let Tcl sort them out.					*/
 /*--------------------------------------------------------------*/
 
-void PrintAllElements(char *cell)
+void PrintAllElements(char *cell, int filenum)
 {
   struct nlist *np;
   struct objlist *ob;
   char *sfx;
 
-  if (*cell == '\0') np = CurrentCell;
-  else np = LookupCell(cell);
+  if ((filenum == -1) && (Circuit1 != NULL) && (Circuit2 != NULL)) {
+      PrintAllElements(cell, Circuit1->file);
+      PrintAllElements(cell, Circuit2->file);
+      return;
+  }
+
+  if (((cell == NULL) || (*cell == '\0')) && (CurrentCell != NULL))
+      np = CurrentCell;
+  else
+      np = LookupCellFile(cell, filenum);
 	
   if (np == NULL) {
-    Printf("Cell '%s' not found.\n",cell);
+    Printf("Circuit '%s' not found.\n",cell);
     return;
   }
 	
@@ -298,15 +306,15 @@ void Fanout(char *cell, char *node, int filter)
   /* now print out all elements that connect to that node */
 
   if (nodenum == -999)
-    Printf("Node '%s' not found in cell '%s'.\n", node, cell);
+    Printf("Net '%s' not found in circuit '%s'.\n", node, cell);
   else if (nodenum < 0)
-    Printf("Node '%s' is disconnected.\n", node);
+    Printf("Net '%s' is disconnected.\n", node);
   else {
     if (ob != NULL)
        PrintObjectType(ob->type);
     else
        Printf("Object");
-    Printf (" '%s' in cell '%s' connects to:\n", node, cell);
+    Printf (" '%s' in circuit '%s' connects to:\n", node, cell);
     ob = np->cell;
     while (ob != NULL) {
       char *obname = ob->name;
@@ -337,13 +345,21 @@ void ElementNodes(char *cell, char *element, int fnum)
   struct nlist *np;
   struct objlist *ob, *nob, *nob2;
   int ckto;
-  char *elementname;
+  char *elementname, *obname;
 
-  if (*cell == '\0') np = CurrentCell;
-  else np = LookupCellFile(cell, fnum);
+  if ((fnum == -1) && (Circuit1 != NULL) && (Circuit2 != NULL)) {
+      ElementNodes(cell, element, Circuit1->file);
+      ElementNodes(cell, element, Circuit2->file);
+      return;
+  }
+
+  if (((cell == NULL) || (*cell == '\0')) && (CurrentCell != NULL))
+      np = CurrentCell;
+  else
+      np = LookupCellFile(cell, fnum);
 	
   if (np == NULL) {
-    Printf("Cell '%s' not found.\n",cell);
+    Printf("Circuit '%s' not found.\n",cell);
     return;
   }
 
@@ -352,24 +368,28 @@ void ElementNodes(char *cell, char *element, int fnum)
 
   ckto = strlen(elementname);
   for (ob = np->cell; ob != NULL; ob = ob->next) {
-    if (!strncmp(elementname, ob->name, ckto))
-       if (*(ob->name + ckto) == '/' || *(ob->name + ckto) == '\0')
+    obname = ob->name;
+    if (*obname == '/') obname++;
+    if (!strncmp(elementname, obname, ckto))
+       if (*(obname + ckto) == '/' || *(obname + ckto) == '\0')
 	  break;
   }
   if (ob == NULL) {
-    Printf("Element '%s' not found in cell '%s'.\n", elementname, cell);
+    Printf("Device '%s' not found in circuit '%s'.\n", elementname, cell);
     return;
   }
 
-  Printf("Element '%s' Pins:\n", elementname);
+  Printf("Device '%s' Pins:\n", elementname);
   for (; ob != NULL; ob = ob->next) {
-    if (!strncmp(elementname, ob->name, ckto)) {
-       if (*(ob->name + ckto) != '/' && *(ob->name + ckto) != '\0')
+    obname = ob->name;
+    if (*obname == '/') obname++;
+    if (!strncmp(elementname, obname, ckto)) {
+       if (*(obname + ckto) != '/' && *(obname + ckto) != '\0')
 	  continue;
 
        Printf("   ");
        PrintObjectType(ob->type);
-       Printf(" (%s)", ob->name + ckto + 1);
+       Printf(" (%s)", obname + ckto + 1);
        for (nob = np->cell; nob != NULL; nob = nob->next) {
 	 if (nob->node == ob->node) {
 	    if (nob->type == NODE) {
@@ -419,7 +439,7 @@ int ChangeScopeCurrent(char *pattern, int typefrom, int typeto)
          for (psrch = CurrentCell->cell; psrch != NULL; psrch = psrch->next) {
 	    if (psrch->type == typefrom && (*matchfunc)(psrch->name, plist->name)) {
 	       psrch->type = typeto;
-	       Printf("Cell %s:  Node %s changed to %s\n",
+	       Printf("Cell %s:  Net %s changed to %s\n",
 		   CurrentCell->name, psrch->name, psrch->type == NODE ?
 		   "local" : psrch->type == GLOBAL ? "global" :
 		   psrch->type == UNIQUEGLOBAL ? "unique global" : "unknown");
@@ -435,7 +455,7 @@ int ChangeScopeCurrent(char *pattern, int typefrom, int typeto)
    if (CurrentCell != NULL) {
       for (psrch = CurrentCell->cell; psrch != NULL; psrch = psrch->next) {
          if (psrch->type == FIRSTPIN) {
-	    numchanged += ChangeScope(CurrentCell->file, psrch->model,
+	    numchanged += ChangeScope(CurrentCell->file, psrch->model.class,
 			pattern, typefrom, typeto);
          }
       }
@@ -458,22 +478,23 @@ typedef struct _gsd {
 /* Function called by hash search on cells, to call ChangeScopeCurrent	*/
 /*----------------------------------------------------------------------*/
 
-int doglobalscope(struct hashlist *p, gsdata *gsd)
+struct nlist *doglobalscope(struct hashlist *p, void *clientdata)
 {
    struct nlist *ptr;
    struct objlist *ob, *lob, *nob;
    int file, numchanged;
+   gsdata *gsd = (gsdata *)clientdata;
 
    ptr = (struct nlist *)(p->ptr);
    file = gsd->fnum;
 
-   if ((file != -1) && (ptr->file != file)) return;
+   if ((file != -1) && (ptr->file != file)) return NULL;
 
    CurrentCell = ptr;
    numchanged = ChangeScopeCurrent(gsd->pattern, gsd->typefrom, gsd->typeto);
    *(gsd->numchanged) += numchanged;
 
-   return 0;
+   return ptr;
 }
 
 /*----------------------------------------------------------------------*/
@@ -485,6 +506,14 @@ int ChangeScope(int fnum, char *cellname, char *pattern, int typefrom, int typet
 {
    struct nlist *SaveCell, *tp;
    int numchanged = 0;
+
+   if ((fnum == -1) && (Circuit1 != NULL) && (Circuit2 != NULL)) {
+      numchanged += ChangeScope(Circuit1->file, cellname,
+			pattern, typefrom, typeto);
+      numchanged += ChangeScope(Circuit2->file, cellname,
+			pattern, typefrom, typeto);
+      return numchanged;
+   }
 
    SaveCell = CurrentCell;
 
@@ -507,7 +536,7 @@ int ChangeScope(int fnum, char *cellname, char *pattern, int typefrom, int typet
          numchanged = ChangeScopeCurrent(pattern, typefrom, typeto);
       }
       else {
-         Printf("No cell '%s' found.\n", cellname);
+         Printf("No circuit '%s' found.\n", cellname);
       }
    }
    CurrentCell = SaveCell;
@@ -523,7 +552,7 @@ typedef struct _noderecord {
   int uniqueglobal, global, port, node, pin;	/* counts */
 } noderecord;
   
-void PrintNodes(char *name)
+void PrintNodes(char *name, int filenum)
 {
   int nodenum, nodemax;
   struct nlist *tp;
@@ -532,12 +561,19 @@ void PrintNodes(char *name)
   noderecord *nodelist;
   int uniqueglobals, globals, ports, nodes, pins;
 	
-  tp = LookupCell(name);
+  if ((filenum == -1) && (Circuit1 != NULL) && (Circuit2 != NULL)) {
+      PrintNodes(name, Circuit1->file);
+      PrintNodes(name, Circuit2->file);
+      return;
+  }
+
+  tp = LookupCellFile(name, filenum);
+
   if (tp == NULL) {
-    Printf ("No cell '%s' found.\n",name);
+    Printf ("No circuit '%s' found.\n",name);
     return;
   }
-  Printf("Cell: '%s'\n",tp->name);
+  Printf("Circuit: '%s'\n",tp->name);
   
   nodemax = 0;
   maxnamelen = 0;
@@ -552,15 +588,13 @@ void PrintNodes(char *name)
     nodenum = ob->node;
     if (nodenum < 0) continue;
     /* repeat bits of objlist.c here for speed */
-#ifdef CACHE_NODENAMES
     if (tp->nodename_cache != NULL) {
       nodelist[nodenum].name = tp->nodename_cache[nodenum]->name;
     }
     else {
-#endif
       /* Overwrite name, in order of precedence */
       if ((nodelist[nodenum].port == 0) &&
-	  ((IsPort(ob->type)) ||
+	  ((IsPort(ob)) ||
 	  ((nodelist[nodenum].node == 0) &&
 	  ((ob->type == NODE) ||
 	  ((nodelist[nodenum].uniqueglobal == 0) &&
@@ -571,9 +605,7 @@ void PrintNodes(char *name)
 	  (ob->type >= FIRSTPIN))))))))))
 	nodelist[nodenum].name = ob->name;
 
-#ifdef CACHE_NODENAMES
     }
-#endif
     switch (ob->type) {
       case UNIQUEGLOBAL:
 	nodelist[nodenum].uniqueglobal++; break;
@@ -599,21 +631,21 @@ void PrintNodes(char *name)
     uniqueglobals = nodelist[nodenum].uniqueglobal;
     nodes = nodelist[nodenum].node;
 
-    Printf("Node %d (%s):", nodenum, nodelist[nodenum].name);
-    Ftab(stdout, maxnamelen + 15);
+    Printf("Net %d (%s):", nodenum, nodelist[nodenum].name);
+    Ftab(NULL, maxnamelen + 15);
     Printf("Total = %d,", pins + ports + nodes + globals + uniqueglobals);
     if (ports)
       Printf(" Ports = %d,", ports);
-    Ftab(stdout, maxnamelen + 40);
+    Ftab(NULL, maxnamelen + 40);
     if (pins)
       Printf("Pins = %d,", pins);
-    Ftab(stdout, maxnamelen + 52);
+    Ftab(NULL, maxnamelen + 52);
     if (nodes)
-      Printf("Nodes = %d,", nodes);
-    Ftab(stdout, maxnamelen + 63);
+      Printf("Nets = %d,", nodes);
+    Ftab(NULL, maxnamelen + 63);
     if (globals)
       Printf("Globals = %d,", globals);
-    Ftab(stdout, maxnamelen + 80);
+    Ftab(NULL, maxnamelen + 80);
     if (uniqueglobals)
       Printf("UniqueGlobals = %d", uniqueglobals);
     Printf("\n");
@@ -622,15 +654,21 @@ void PrintNodes(char *name)
   FREE(nodelist);
 }
   
-void PrintCell(char *name)
+void PrintCell(char *name, int fnum)
 {
   struct nlist *tp;
   struct objlist *ob;
   int maxnamelen;
 	
-  tp = LookupCell(name);
+  if ((fnum == -1) && (Circuit1 != NULL) && (Circuit2 != NULL)) {
+      PrintCell(name, Circuit1->file);
+      PrintCell(name, Circuit2->file);
+      return;
+  }
+
+  tp = LookupCellFile(name, fnum);
   if (tp == NULL) {
-    Printf ("No cell '%s' found.\n",name);
+    Printf ("No circuit '%s' found.\n",name);
     return;
   }
   maxnamelen = 0;
@@ -639,10 +677,10 @@ void PrintCell(char *name)
 	  if ((len = strlen(ob->name)) > maxnamelen) maxnamelen = len;
   }
   
-  Printf("Cell: '%s'\n", tp->name);
+  Printf("Circuit: '%s'\n", tp->name);
   for (ob = tp->cell; ob != NULL; ob = ob->next) {
     Printf ("%s ", ob->name[1] == ':' ? ob->name : ob->name);
-    Ftab(stdout, maxnamelen + 2);
+    Ftab(NULL, maxnamelen + 2);
     switch (ob->type) {
       case UNIQUEGLOBAL:	
 	Printf("unique global"); break;
@@ -658,25 +696,31 @@ void PrintCell(char *name)
 	Printf("pin %d", ob->type);
 	break;
     }
-    Ftab(stdout, 40);
+    Ftab(NULL, 40);
     if (ob->type != PROPERTY)
-       Printf(" Node #: %d", ob->node);
+       Printf(" Net #: %d", ob->node);
     Printf("\n");
   }
 }
 
-void PrintInstances(char *name)
+void PrintInstances(char *name, int filenum)
 {
   struct nlist *tp;
   struct objlist *ob;
   int instancecount;
 	
-  tp = LookupCell(name);
+  if ((filenum == -1) && (Circuit1 != NULL) && (Circuit2 != NULL)) {
+      PrintInstances(name, Circuit1->file);
+      PrintInstances(name, Circuit2->file);
+      return;
+  }
+
+  tp = LookupCellFile(name, filenum);
   if (tp == NULL) {
-    Printf ("No cell '%s' found.\n",name);
+    Printf ("No circuit '%s' found.\n",name);
     return;
   }
-  Printf("Cell: '%s'\n",tp->name);
+  Printf("Circuit: '%s'\n",tp->name);
   instancecount = 0;
   for (ob = tp->cell; ob != NULL; ob = ob->next) {
     if (ob->type == FIRSTPIN) {
@@ -710,15 +754,15 @@ void PrintInstances(char *name)
 	ob2 = ob2->next;
       } while (ob2 != NULL && ob2->type > FIRSTPIN);
 /*      Fflush(stdout); */
-      Printf("%s (class: %s)", ob->instance, ob->model);
-      Ftab(stdout,35);
+      Printf("%s (class: %s)", ob->instance, ob->model.class);
+      Ftab(NULL,35);
       Printf("%2d pins ->",pin);
       if (port) Printf("%2d ports,",port);
-      Ftab(stdout,55);
+      Ftab(NULL,55);
       if (node) Printf("%2d nodes,",node);
-      Ftab(stdout,65);
+      Ftab(NULL,65);
       if (global) Printf("%2d globals,",global);
-      Ftab(stdout,75);
+      Ftab(NULL,75);
       if (uniqueglobal) Printf("%2d ug",uniqueglobal);
       Printf("\n");
     }
@@ -736,16 +780,19 @@ void DescribeInstance(char *name, int file)
   int instancecount;
   int node, nodenumber, morenodes, disconnectednodes;
 	
-  if (file == -1)
-     tp = LookupCell(name);
-  else
-     tp = LookupCellFile(name, file);
+  if ((file == -1) && (Circuit1 != NULL) && (Circuit2 != NULL)) {
+      DescribeInstance(name, Circuit1->file);
+      DescribeInstance(name, Circuit2->file);
+      return;
+  }
+
+  tp = LookupCellFile(name, file);
 
   if (tp == NULL) {
-    Printf ("No cell '%s' found.\n",name);
+    Printf("No circuit '%s' found.\n",name);
     return;
   }
-  Printf("Cell: '%s'\n",tp->name);
+  Printf("Circuit: '%s'\n",tp->name);
 
   /* First pass counts total number of entries */
   nodemax = 0;
@@ -753,9 +800,10 @@ void DescribeInstance(char *name, int file)
   for (ob = tp->cell; ob != NULL; ob = ob->next) 
   {
     if (ob->node > nodemax) nodemax = ob->node;
-    else if (ob->node == -1) {
+    else if ((ob->node == -1) && (ob->model.port != PROXY)) {
+      if (disconnectednodes == 0) Fprintf(stderr, "\n");
       disconnectednodes++;
-      Printf("  disconnected node: %s\n", ob->name);
+      Fprintf(stderr, "Cell %s disconnected node: %s\n", tp->name, ob->name);
     }
   }
   instlist = (unsigned char *) CALLOC((nodemax + 1), sizeof(unsigned char));
@@ -781,23 +829,23 @@ void DescribeInstance(char *name, int file)
   for (ob = tp->cell; ob != NULL; ob = ob->next) {
     if (ob->type == FIRSTPIN) {
       instancecount++;
-      tp2 = LookupCellFile(ob->model, tp->file);
+      tp2 = LookupCellFile(ob->model.class, tp->file);
       tp2->dumped++;
     }
   }
-  Printf("Cell %s contains %d instances.\n",name,instancecount);
+  Printf("Circuit %s contains %d device instances.\n", name, instancecount);
 
   /* print out results */
   tp = FirstCell();
   while (tp != NULL) {
     if (tp->dumped) {
       Printf("  Class: %s", tp->name);
-      Ftab(stdout, 30);
+      Ftab(NULL, 30);
       Printf(" instances: %3d\n", tp->dumped);
     }
     tp = NextCell();
   }
-  Printf("Cell contains %d nodes", nodenumber);
+  Printf("Circuit contains %d nets", nodenumber);
   if (disconnectednodes) 
     Printf(", and %d disconnected pin%s", disconnectednodes,
 		((disconnectednodes == 1) ? "" : "s"));
@@ -805,35 +853,47 @@ void DescribeInstance(char *name, int file)
 
 }
 
-void PrintPortsInCell(char *cellname)
+void PrintPortsInCell(char *cellname, int filenum)
 {
   struct nlist *np;
   struct objlist *ob;
   int portcount;
 
-  np = LookupCell(cellname);
+  if ((filenum == -1) && (Circuit1 != NULL) && (Circuit2 != NULL)) {
+      PrintPortsInCell(cellname, Circuit1->file);
+      PrintPortsInCell(cellname, Circuit2->file);
+      return;
+  }
+
+  np = LookupCellFile(cellname, filenum);
   if (np == NULL) {
-    Printf("No cell: %s\n",cellname);
+    Printf("No circuit: %s\n",cellname);
     return;
   }
   portcount = 0;
   for (ob = np->cell; ob != NULL; ob = ob->next) 
-    if (IsPort(ob->type)) {
+    if (IsPort(ob)) {
       portcount++;
       Printf("%s\n", ob->name);
     }
   Printf("Cell %s contains %d ports.\n",cellname, portcount);
 }
 
-void PrintLeavesInCell(char *cellname)
+void PrintLeavesInCell(char *cellname, int filenum)
 {
   struct nlist *np;
   struct objlist *ob;
   int am_a_leaf;
 
-  np = LookupCell(cellname);
+  if ((filenum == -1) && (Circuit1 != NULL) && (Circuit2 != NULL)) {
+      PrintLeavesInCell(cellname, Circuit1->file);
+      PrintLeavesInCell(cellname, Circuit2->file);
+      return;
+  }
+
+  np = LookupCellFile(cellname, filenum);
   if (np == NULL) {
-    Printf("No cell: %s\n",cellname);
+    Printf("No circuit: %s\n",cellname);
     return;
   }
   if (np->dumped) return;
@@ -849,7 +909,7 @@ void PrintLeavesInCell(char *cellname)
   for (ob = np->cell; ob != NULL; ob = ob->next)
     if (ob->type == FIRSTPIN) {
       /* if I contain an instance, I cannot be a leaf */
-      PrintLeavesInCell(ob->model);
+      PrintLeavesInCell(ob->model.class, filenum);
       am_a_leaf = 0;
     }
 
@@ -863,7 +923,7 @@ static int PrintLeavesInCellHash(struct hashlist *p)
   struct nlist *ptr;
 
   ptr = (struct nlist *)(p->ptr);
-  if ((ptr->class == CLASS_SUBCKT)) PrintLeavesInCell(ptr->name);
+  if ((ptr->class == CLASS_SUBCKT)) PrintLeavesInCell(ptr->name, ptr->file);
   return(0);
 }
 
@@ -893,6 +953,7 @@ void Query(void)
   char repstr2[100];
   float StartTime;   /* for elapsed CPU times */
   int Timing;  /* if true, print times of each command */
+  int filenum = -1;
 	
   if (!SuppressPrompts)
     Printf("Netgen %s.%s: %s, %s, %s\n", NETGEN_VERSION, NETGEN_REVISION,
@@ -906,92 +967,96 @@ void Query(void)
     if (Timing) StartTime = CPUTime();
     reply = repstr[0];
     switch (reply) {
-    case 'h' : PrintCellHashTable(0, NULL); break;
-    case 'H' : PrintCellHashTable(1, NULL); break;
+    case 'h' : PrintCellHashTable(0, filenum); break;
+    case 'H' : PrintCellHashTable(1, filenum); break;
     case 'N' :
-      promptstring("Enter cell name: ", repstr);
-      PrintNodes(repstr);
+      promptstring("Enter circuit name: ", repstr);
+      PrintNodes(repstr, -1);
       break;
     case 'n' : 
       promptstring("Enter element name: ", repstr);
       if (CurrentCell == NULL) 
-	promptstring("Enter cell name:    ", repstr2);
+	promptstring("Enter circuit name:    ", repstr2);
       else strcpy(repstr2, CurrentCell->name);
       Fanout(repstr2, repstr, ALLOBJECTS);
       break;
     case 'e' : 
       promptstring("Enter element name: ", repstr);
       if (CurrentCell == NULL) 
-	promptstring("Enter cell name:    ", repstr2);
+	promptstring("Enter circuit name:    ", repstr2);
       else strcpy(repstr2, CurrentCell->name);
       PrintElement(repstr2,repstr);
       break;
     case 'c' : 
-      promptstring("Enter cell name: ", repstr);
-      PrintCell(repstr);
+      promptstring("Enter circuit name: ", repstr);
+      PrintCell(repstr, filenum);
       break;
     case 'i' :
-      promptstring("Enter cell name: ", repstr);
-      PrintInstances(repstr);
+      promptstring("Enter circuit name: ", repstr);
+      PrintInstances(repstr, filenum);
       break;
     case 'd':
-      promptstring("Enter cell name: ", repstr);
-      DescribeInstance(repstr, -1);
+      promptstring("Enter circuit name: ", repstr);
+      DescribeInstance(repstr, filenum);
       break;
 /* output file formats */
     case 'k' : 
-      promptstring("Write NTK: Enter cell name: ", repstr);
+      promptstring("Write NTK: Enter circuit name: ", repstr);
       Ntk(repstr,"");
       break;
     case 'x' : 
-      promptstring("Write EXT: Enter cell name: ", repstr);
-      Ext(repstr);
+      promptstring("Write EXT: Enter circuit name: ", repstr);
+      Ext(repstr, filenum);
       break;
     case 'z' : 
-      promptstring("Write SIM: Enter cell name: ", repstr);
-      Sim(repstr);
+      promptstring("Write SIM: Enter circuit name: ", repstr);
+      Sim(repstr, filenum);
       break;
     case 'w' : 
-      promptstring("Write WOMBAT: cell name: ", repstr);
+      promptstring("Write WOMBAT: circuit name: ", repstr);
       Wombat(repstr,NULL);
       break;
     case 'a' : 
-      promptstring("Write ACTEL: cell name: ", repstr);
+      promptstring("Write ACTEL: circuit name: ", repstr);
       Actel(repstr,"");
       break;
     case 's':
-      promptstring("Write SPICE: cell name: ", repstr);
-      SpiceCell(repstr, -1, "");
+      promptstring("Write SPICE: circuit name: ", repstr);
+      SpiceCell(repstr, filenum, "");
+      break;
+    case 'v':
+      promptstring("Write Verilog: circuit name: ", repstr);
+      VerilogModule(repstr, filenum, "");
       break;
     case 'E':
-      promptstring("Write ESACAP: cell name: ", repstr);
+      promptstring("Write ESACAP: circuit name: ", repstr);
       EsacapCell(repstr,"");
       break;
     case 'g':
-      promptstring("Write NETGEN: cell name: ", repstr);
+      promptstring("Write NETGEN: circuit name: ", repstr);
       WriteNetgenFile(repstr,"");
       break;
     case 'C':
-      promptstring("Write C code: cell name: ", repstr);
+      promptstring("Write C code: circuit name: ", repstr);
       Ccode(repstr,"");
       break;
 /* input file formats */
     case 'r':
     case 'R':
       promptstring("Read file: ",repstr);
-      ReadNetlist(repstr);
+      ReadNetlist(repstr, &filenum);
       break;
     case 'X' : 
       promptstring("Read EXT: Enter file name: ", repstr);
-      ReadExtHier(repstr);
+      ReadExtHier(repstr, &filenum);
       break;
     case 'Z' : 
       promptstring("Read SIM: Enter file name: ", repstr);
-      ReadSim(repstr);
+      ReadSim(repstr, &filenum);
       break;
     case 'K' : 
       promptstring("Read NTK: file? ", repstr);
-      ReadNtk(repstr);
+      ReadNtk(repstr, &filenum);
       break;
     case 'A' : 
       printf("Reading ACTEL library.\n");
@@ -999,35 +1064,39 @@ void Query(void)
       break;
     case 'S':
       promptstring("Read SPICE (.ckt) file? ", repstr);
-      ReadSpice(repstr);
+      ReadSpice(repstr, &filenum);
+      break;
+    case 'V':
+      promptstring("Read Verilog (.v) file? ", repstr);
+      ReadVerilog(repstr, &filenum);
       break;
     case 'G' : 
       promptstring("Read NETGEN: file? ", repstr);
-      ReadNetgenFile(repstr);
+      ReadNetgenFile(repstr, &filenum);
       break;
 
     case 'f' : 
-      promptstring("Enter cell name to flatten: ", repstr);
-      Flatten(repstr, -1);
+      promptstring("Enter circuit name to flatten: ", repstr);
+      Flatten(repstr, filenum);
       break;
     case 'F' : 
-      promptstring("Enter class of cells to flatten: ", repstr);
-      FlattenInstancesOf(repstr, -1);
+      promptstring("Enter class of circuit to flatten: ", repstr);
+      FlattenInstancesOf(repstr, filenum);
       break;
     case 'p' : 
-      promptstring("Enter cell name: ", repstr);
-      PrintPortsInCell(repstr);
+      promptstring("Enter circuit name: ", repstr);
+      PrintPortsInCell(repstr, filenum);
       break;
     case 'T' : 
       NETCOMP();
       break;
     case 'l' : 
       ClearDumpedList();
-      promptstring("Enter cell name: ", repstr);
-      PrintLeavesInCell(repstr);
+      promptstring("Enter circuit name: ", repstr);
+      PrintLeavesInCell(repstr, filenum);
       break;
     case 'L' : 
-      printf("List of all leaf cells:\n");
+      printf("List of all leaf circuits:\n");
       PrintAllLeaves();
       break;
     case 'D' : Debug = !Debug; 
@@ -1086,12 +1155,12 @@ void Query(void)
       printf(
 "READ:  (r)ead, nt(K), e(X)t, sim (Z), (A)ctel library, net(G)en, (S)pice\n");
       printf(
-"Print LISTS: (d)escribe cell (c)ontents, (i)nstances, (p)orts, (l)eaves (L)\n"
+"Print LISTS: (d)escribe circuit (c)ontents, (i)nstances, (p)orts, (l)eaves (L)\n"
 	    );
       printf(
 "PRINT: (n)ode connectivity (N), (e)lement list, (h)ash table entries (H))\n");
       printf(
-"CELL OPS: (f)latten cell, (F)latten instance, make cell primiti(v)e (V=all)\n"
+"CELL OPS: (f)latten circuit, (F)latten instance, make circuit primiti(v)e (V=all)\n"
 	    );
 
       printf("toggle (D)ebug, (t)ime commands, embed (P)rotochip, ne(T)cmp\n");

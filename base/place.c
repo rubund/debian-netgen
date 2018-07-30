@@ -195,7 +195,7 @@ int InitializeMatrices(char *cellname)
       Leaves++;
       if (Leaves > MAX_LEAVES) continue; /* keep going within the for loop */
 
-      tp = LookupCell(ob->model);
+      tp = LookupCell(ob->model.class);
       if (tp == NULL || (tp->class != CLASS_SUBCKT) || tp->embedding == NULL)
 	LEVEL(Leaves) = 0;
       else LEVEL(Leaves) = ((struct embed *)(tp->embedding))->level;
@@ -315,7 +315,6 @@ void PrintE(FILE *outfile, int E)
 
 
 #if 0
-INLINE
 int UsedLeaves(int E1, int E2)
 /* returns the number of leaves in E1 + E2, which are assumed independent */
 {
@@ -327,7 +326,6 @@ int UsedLeaves(int E1, int E2)
 #endif
 
 
-INLINE
 int CommonNodes(int E1, int E2, int IncludeGlobals)
 /* returns the number of nodes that E1 and E2 share */
 /* if IncludeGlobals == 0, do not count large connectivity nodes */
@@ -350,7 +348,6 @@ int CommonNodes(int E1, int E2, int IncludeGlobals)
   return(result);
 }
 
-INLINE
 int GlobalNodes(int E)
 /* return the number of global nodes that E contacts */
 /* for now, global nodes are just cell ports */
@@ -588,9 +585,9 @@ void EmbedCells(char *cellname, enum EmbeddingStrategy strategy)
   for (ob = tp->cell; ob != NULL; ob = ob->next)
     if (ob->type == FIRSTPIN) {
       struct nlist *tp2;
-      tp2 = LookupCell(ob->model);
+      tp2 = LookupCell(ob->model.class);
       if (!(tp2->dumped) && (tp2->class == CLASS_SUBCKT))
-	EmbedCells(ob->model,strategy);
+	EmbedCells(ob->model.class,strategy);
     }
   switch (strategy) {
   case bottomup: EmbedCell(cellname, NULL);
@@ -1085,8 +1082,8 @@ void PROTOCHIP(void)
       promptstring("Cell to count sub-graphs: ",name);
       CountSubGraphs(name);
       break;
-    case 'h': PrintCellHashTable(0, NULL); break;
-    case 'H': PrintCellHashTable(1, NULL); break;
+    case 'h': PrintCellHashTable(0, -1); break;
+    case 'H': PrintCellHashTable(1, -1); break;
     case 'F':
       promptstring("Enter leaf pinout: ",name);
       LeafPins = atoi(name);

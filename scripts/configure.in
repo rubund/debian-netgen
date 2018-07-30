@@ -1,7 +1,7 @@
 dnl Process this file with autoconf to produce a configure script.
 dnl Use autoconf 2.52 or newer.
 
-AC_INIT(netgen, 1.3, magic-hackers@csl.cornell.edu)
+AC_INIT(netgen, 1.3, eda-dev@opencircuitdesign.com)
 AC_PREREQ(2.52)
 AC_CONFIG_SRCDIR(rules.mak)
 AC_CONFIG_AUX_DIR(.)
@@ -38,7 +38,7 @@ dnl assert that input files are of type C, or else the preprocessing
 dnl stage will not execute correctly on the ".in" files in the scmos
 dnl directory.
 
-if test "$CPP" = "gcc -E" ; then
+if test "$CPP" = "$CC -E" ; then
    CPP="$CPP -x c"
 fi
 
@@ -163,6 +163,9 @@ AC_CHECK_HEADERS(limits.h)
 dnl Check for <param.h>
 AC_CHECK_HEADERS(param.h)
 
+dnl Check for Python3
+AC_CHECK_PROG(HAVE_PYTHON3, python3, yes, no)
+
 dnl Check for va_copy
 AC_CACHE_CHECK([for va_copy], ac_cv_c_va_copy,
  AC_TRY_LINK(
@@ -195,6 +198,7 @@ fi
 # not ANSI-compliant and won't compile without quite a bit of work.
 AC_DEFINE(DBUG_OFF)
 
+stub_defs=""
 extra_defs="$extra_defs -DCAD_DIR=\\\"\${LIBDIR}\\\""
 X_LIBS=
 X_CFLAGS=
@@ -329,7 +333,7 @@ if test $usingTcl ; then
     #  1. Search previously named locations.
 
     for dir in \
-     $prefix \
+     $ac_default_prefix \
      $exec_prefix
     do
       if test -r "$dir/tclConfig.sh" ; then
@@ -351,11 +355,10 @@ if test $usingTcl ; then
        `ls -dr /usr/local/tcl/tcl[[7-9]].[[0-9]]* 2>/dev/null` \
        /usr/local/tcl \
        /usr/local/lib \
+       /usr/lib64 \
        /usr/local \
        `ls -dr /usr/lib/tcl[[7-9]].[[0-9]]* 2>/dev/null` \
        /sw/lib \
-       /usr/lib \
-       /usr/lib64 \
        /usr
       do
         if test -r "$dir/tclConfig.sh" ; then
@@ -415,7 +418,7 @@ if test $usingTcl ; then
     #  1. Search previously named locations.
     #
     for dir in \
-     $prefix \
+     $ac_default_prefix \
      $exec_prefix
     do
       if test -r "$dir/tkConfig.sh" ; then
@@ -434,21 +437,17 @@ if test $usingTcl ; then
     #
     if test "x$tk_config_sh" = "x" ; then
       for dir in \
-	/usr/local \
-	/usr \
-	`ls -dr /usr/local/lib/tk[[7-9]].[[0-9]]* 2>/dev/null` \
-	`ls -dr /usr/lib/tk[[7-9]].[[0-9]]* 2>/dev/null` \
-	`ls -dr /usr/local/tk/tk[[7-9]].[[0-9]]* 2>/dev/null` \
-	`ls -dr /usr/local/tk[[7-9]].[[0-9]]* 2>/dev/null` \
-	/usr/local/tk \
-	`ls -dr /usr/local/lib/tcl[[7-9]].[[0-9]]* 2>/dev/null` \
-	`ls -dr /usr/lib/tcl/tk[[7-9]].[[0-9]]* 2>/dev/null` \
 	`ls -dr /usr/local/tcl/tcl[[7-9]].[[0-9]]* 2>/dev/null` \
-	`ls -dr /usr/share/tcltk/tk[[7-9]].[[0-9]]* 2>/dev/null` \
-	/sw/lib \
-	/usr/lib \
+	`ls -dr /usr/local/tk/tk[[7-9]].[[0-9]]* 2>/dev/null` \
+	/usr/local/tcl \
+	/usr/local/lib \
 	/usr/lib64 \
-	${x_libraries}
+	/usr/local \
+	`ls -dr /usr/lib/tcl[[7-9]].[[0-9]]* 2>/dev/null` \
+	`ls -dr /usr/lib/tk[[7-9]].[[0-9]]* 2>/dev/null` \
+	/sw/lib \
+	${x_libraries} \
+	/usr
       do
         if test -r "$dir/tkConfig.sh" ; then
           tk_config_sh="$dir/tkConfig.sh"
@@ -476,6 +475,25 @@ fi
 if test $usingTcl ; then
   . $tcl_config_sh
   . $tk_config_sh
+
+  # Should probably trust the config file contents, but this configure
+  # file checks the Tcl and Tk include and lib directories.  Since
+  # the config file doesn't separate out the libraries from the strings
+  # passed to the compiler/linker, do it manually here.
+  #
+  # Extract TCL_LIB_DIR from TCL_LIB_SPEC
+  # Extract TK_LIB_DIR from TK_LIB_SPEC
+  # Extract TCL_INC_DIR from TCL_INCLUDE_SPEC
+  # Extract TK_INC_DIR from TK_INCLUDE_SPEC
+  #
+  # These will be the defaults unless overridden by configure command line
+
+  tmpstr=${TCL_LIB_SPEC#*-L}
+  TCL_LIB_DIR=${tmpstr% -l*}
+  tmpstr=${TK_LIB_SPEC#*-L}
+  TK_LIB_DIR=${tmpstr% -l*}
+  TCL_INC_DIR=${TCL_INCLUDE_SPEC#*-I}
+  TK_INC_DIR=${TK_INCLUDE_SPEC#*-I}
 
   if test "$TCL_VERSION" = "7.6" -a "$TK_VERSION" = "4.2" ; then
     :
@@ -620,7 +638,7 @@ if test $usingTcl ; then
       fi
     done
     if test "x${TCLSH_EXE}" != "x" ; then
-      break;
+      break
     fi
   done
   if test "x${TCLSH_EXE}" = "x" ; then
@@ -670,8 +688,8 @@ if test $usingTcl ; then
   else
     for libname in \
      "${loclib:=${TCL_EXEC_PREFIX}/lib}/lib${TCL_LIB_NAME}${SHDLIB_EXT}" \
-     "${loclib:=${TCL_EXEC_PREFIX}/lib64}/lib${TCL_LIB_NAME}${SHDLIB_EXT}" \
-     "${loclib:=${TCL_EXEC_PREFIX}/lib}/lib${TCL_LIB_NAME}${SHDLIB_EXT_ALT}"
+     "${loclib:=${TCL_EXEC_PREFIX}/lib}/lib${TCL_LIB_NAME}${SHDLIB_EXT_ALT}" \
+     "${loclib:=${TCL_EXEC_PREFIX}/lib64}/lib${TCL_LIB_NAME}${SHDLIB_EXT}"
     do
       if test -r "$libname" ; then
         TCL_LIB_DIR="${TCL_EXEC_PREFIX}/lib"
@@ -784,6 +802,7 @@ if test $usingTcl ; then
   AC_DEFINE(TCL_NETGEN)
   extra_libs="$extra_libs \${NETGENDIR}/tcltk/libtcltk.o"
   extra_defs="$extra_defs -DTCL_DIR=\\\"\${TCLDIR}\\\""
+  stub_defs="$stub_defs -DUSE_TCL_STUBS -DUSE_TK_STUBS"
 else
   programs="$programs netgen"
   unused="$unused tcltk"
@@ -850,10 +869,9 @@ case $target in
   *cygwin*)
     AC_DEFINE(CYGWIN)
     AC_DEFINE(i386)
-    AC_DEFINE(WIN32)
     ;; 
   *darwin*)
-    AC_DEFINE(macosx)
+    $as_echo "#define macosx macos" >> confdefs.h
     if test "$CPP" = "cc -E" ; then
        CPPFLAGS="$CPPFLAGS -no-cpp-precomp"
     fi
@@ -864,6 +882,7 @@ esac
 # -----------------------------------------------------------------------
 
 if test $usingTcl ; then
+    LIB_SPECS_NOSTUB="${LIB_SPECS}"
 
 # -----------------------------------------------------------------------
 #
@@ -875,9 +894,11 @@ if test $usingTcl ; then
   fi
   if test "${TK_LIB_DIR}" = "/usr/lib" -o \
         "${TK_LIB_DIR}" = "/usr/lib64" ; then
-    LIB_SPECS="${LIB_SPECS} ${TK_LIB_SPEC}"
+    LIB_SPECS_NOSTUB="${LIB_SPECS_NOSTUB} ${TK_LIB_SPEC}"
+    LIB_SPECS="${LIB_SPECS} ${TK_STUB_LIB_SPEC}"
   else
-    LIB_SPECS="${LIB_SPECS} -L${TK_LIB_DIR} ${TK_LIB_SPEC}"
+    LIB_SPECS_NOSTUB="${LIB_SPECS_NOSTUB} -L${TK_LIB_DIR} ${TK_LIB_SPEC}"
+    LIB_SPECS="${LIB_SPECS} -L${TK_LIB_DIR} ${TK_STUB_LIB_SPEC}"
     if test "x${loader_run_path}" = "x" ; then
       loader_run_path="${TK_LIB_DIR}"
     else
@@ -899,11 +920,13 @@ if test $usingTcl ; then
   fi
 
   if test "${TCL_LIB_DIR}" = "/usr/lib" -o \
-        "${TCL_LIB_DIR}" = "/usr/lib64" -o \ 
+        "${TCL_LIB_DIR}" = "/usr/lib64" -o \
         "${TCL_LIB_DIR}" = "${TK_LIB_DIR}" ; then
-    LIB_SPECS="${LIB_SPECS} ${TCL_LIB_SPEC}"
+    LIB_SPECS_NOSTUB="${LIB_SPECS_NOSTUB} ${TCL_LIB_SPEC}"
+    LIB_SPECS="${LIB_SPECS} ${TCL_STUB_LIB_SPEC}"
   else
-    LIB_SPECS="${LIB_SPECS} -L${TCL_LIB_DIR} ${TCL_LIB_SPEC}"
+    LIB_SPECS_NOSTUB="${LIB_SPECS_NOSTUB} -L${TCL_LIB_DIR} ${TCL_LIB_SPEC}"
+    LIB_SPECS="${LIB_SPECS} -L${TCL_LIB_DIR} ${TCL_STUB_LIB_SPEC}"
     if test "x${loader_run_path}" = "x" ; then
       loader_run_path="${TCL_LIB_DIR}"
     else
@@ -1222,6 +1245,7 @@ if test $usingTcl ; then
   AC_SUBST(LDFLAGS)
   AC_SUBST(INC_SPECS)
   AC_SUBST(LIB_SPECS)
+  AC_SUBST(LIB_SPECS_NOSTUB)
   AC_SUBST(WISH_EXE)
   AC_SUBST(TCLSH_EXE)
   AC_SUBST(TCL_LIB_DIR)
@@ -1239,6 +1263,7 @@ AC_SUBST(PACKAGE)
 AC_SUBST(SCRIPTS)
 AC_SUBST(extra_libs)
 AC_SUBST(extra_defs)
+AC_SUBST(stub_defs)
 AC_SUBST(ld_extra_libs)
 AC_SUBST(ld_extra_objs)
 AC_SUBST(top_extra_libs)
@@ -1252,6 +1277,7 @@ AC_SUBST(gr_cflags)
 AC_SUBST(gr_dflags)
 AC_SUBST(gr_libs)
 AC_SUBST(gr_srcs)
+AC_SUBST(HAVE_PYTHON3)
 
 AC_SUBST(X_LIBS)
 AC_SUBST(X_CFLAGS)
@@ -1290,6 +1316,20 @@ else
    echo "   and/or libraries installed, or they are not in a standard path."
    echo "   Try using configure options --with-tcl=<DIR> and --with-tk=<DIR>."
    echo
+fi
+
+${ECHO_N} "Python3:    "
+if test "x${HAVE_PYTHON3}" == "x"; then
+   echo "no"
+   echo
+   echo "   Without Python3, you cannot run the GUI interface to netgen."
+   echo "   This is purely optional, as it contains no features not"
+   echo "   available in the command-line (Tcl/Tk) version.  If you want"
+   echo "   python3 support, make sure that you have installed python3"
+   echo "   on your system."
+   echo
+else
+   echo "yes"
 fi
 
 echo "-----------------------------------------------------------"

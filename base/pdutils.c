@@ -284,16 +284,6 @@ char *strpbrk(char *s, char *breakat)
 
 #endif 
 
-#ifdef NEED_STRDUP
-char *strdup(const char *s)
-{
-	char *p;
-	
-	if ((p = (char *)MALLOC(strlen(s)+1)) != NULL) strcpy(p, s);
-	return (p);
-}
-#endif
-
 #ifdef NEED_STRTOL
 long strtol(char *str, char **ptr, int base)
 /* extremely poor emulator */
@@ -311,9 +301,6 @@ long strtol(char *str, char **ptr, int base)
 }
 #endif
 
-
-
-			      
 #ifdef NEED_VPRINTF
 
 #if 1

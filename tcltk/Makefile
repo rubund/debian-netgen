@@ -23,18 +23,20 @@ install-tcl: netgenexec${EXEEXT} $(DESTDIR)${BINDIR}/netgen.sh ${TCL_FILES}
 	${CP} netgenexec${EXEEXT} $(DESTDIR)${TCLDIR}/netgenexec${EXEEXT}
 
 netgenexec${EXEEXT}: netgenexec.c
-	${CC} ${CFLAGS} ${CPPFLAGS} ${DFLAGS} netgenexec.c -o netgenexec${EXEEXT} \
-		${LDFLAGS} ${LIBS} ${LIB_SPECS}
+	${CC} ${CFLAGS} ${CPPFLAGS} ${DFLAGS_NOSTUB} netgenexec.c \
+		-o netgenexec${EXEEXT} \
+		${LDFLAGS} ${LIBS} ${LIB_SPECS_NOSTUB}
 
 netgen.tcl: netgen.tcl.in
-	sed -e /TCL_DIR/s%TCL_DIR%${TCLDIR}%g \
-	    -e /SHDLIB_EXT/s%SHDLIB_EXT%${SHDLIB_EXT}%g \
+	sed -e 's%TCL_DIR%${TCLDIR}%g' \
+	    -e 's%SHDLIB_EXT%${SHDLIB_EXT}%g' \
 	    netgen.tcl.in > netgen.tcl
 
 netgen.sh: netgen.sh.in
-	sed -e /TCL_DIR/s%TCL_DIR%${TCLDIR}%g \
-	    -e /TCLLIB_DIR/s%TCLLIB_DIR%${TCL_LIB_DIR}%g \
-	    -e /WISH_EXE/s%WISH_EXE%${WISH_EXE}%g \
+	sed -e 's%TCL_DIR%${TCLDIR}%g' \
+	    -e 's%PY_DIR%${PYDIR}%g' \
+	    -e 's%TCLLIB_DIR%${TCL_LIB_DIR}%g' \
+	    -e 's%WISH_EXE%${WISH_EXE}%g' \
 	    netgen.sh.in > netgen.sh
 
 $(DESTDIR)${TCLDIR}/%: %

@@ -36,7 +36,7 @@ the Free Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. */
 
 #define XILINXHASHSIZE 99
 static long xilinxhashbase = 0xA00;
-static struct hashlist *xilinxnametab[XILINXHASHSIZE];
+static struct hashdict xilinxnamedict;
 static FILE *xilinxfile;
 
 char *gndnet = "0";
@@ -132,6 +132,7 @@ char *xilinx_class(model)
 	}
 	return(model);
 }
+void
 Xilinx(cellname, filename)
 	char *cellname;
 	char *filename;
@@ -156,7 +157,7 @@ Xilinx(cellname, filename)
 		return;
 	}
 	ClearDumpedList();
-	InitializeHashTable(xilinxnametab, XILINXHASHSIZE);
+	InitializeHashTable(&xilinxnamedict, XILINXHASHSIZE);
 	if (LookupCell(cellname) != NULL)
 		xilinxCell(cellname);
 	CloseFile(FileName);
@@ -262,8 +263,8 @@ xilinx_sym(nl,gob)
 	char *inv,dir,*net;
 
 	FlushString("SYM,%s,%s\n",
-		xilinx_name("",gob->instance),
-		xilinx_class(gob->model)
+		xilinx_name("",gob->instance.name),
+		xilinx_class(gob->model.class)
 	);
 
 	ob = gob;
@@ -313,16 +314,16 @@ xilinx_sym(nl,gob)
 		ob = ob->next;
 	}
 
-	if(!strncmp(gob->model,"DF1",3)){
+	if(!strncmp(gob->model.class,"DF1",3)){
 		FlushString("PIN,RD,I,%s\n",xilinx_name("n$",gndnet));
 		FlushString("PIN,CE,I,%s\n",xilinx_name("n$",vccnet));
 	}
 
-	if(!strncmp(gob->model,"DFC1",4)){
+	if(!strncmp(gob->model.class,"DFC1",4)){
 		FlushString("PIN,CE,I,%s\n",xilinx_name("n$",vccnet));
 	}
 
-	if(!strncmp(gob->model,"DFE",3)){
+	if(!strncmp(gob->model.class,"DFE",3)){
 		FlushString("PIN,RD,I,%s\n",xilinx_name("n$",gndnet));
 	}
 
@@ -352,7 +353,7 @@ xilinx_sym(nl,gob)
 				default:
 					dir = 'I'; break;
 			}
-			if(IsPort(xx->type)){
+			if(IsPort(xx)){
 				if(dir == 'O')
 					xx->type = -92;
 				if(dir == 'I')

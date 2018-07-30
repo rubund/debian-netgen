@@ -52,13 +52,6 @@ void (*oldinthandler)() = SIG_DFL;
 extern Tcl_Interp *netgeninterp;
 #endif
 
-#ifndef TRUE
-#define TRUE 1
-#endif
-#ifndef FALSE
-#define FALSE 1
-#endif
-
 /* define the following to debug core allocation */
 #undef DEBUG_ALLOC
 
@@ -136,27 +129,15 @@ struct Correspond {
 	struct Correspond *next;
 };
 
-struct Permutation {
-	char *model;
-	char *pin1;
-	char *pin2;
-	struct Permutation *next;
-};
-
 struct ElementClass *ElementClasses = NULL;
 struct NodeClass *NodeClasses = NULL;
 struct Correspond *ClassCorrespondence = NULL;
 struct Correspond *CompareQueue = NULL;
 struct IgnoreList *ClassIgnore = NULL;
-struct Permutation *PinPermutations = NULL;
 
 /* global variables for return of lists from CreateLists */
 static struct Element *Elements;
 static struct Node *Nodes;
-
-/* global variables to keep track of circuits */
-static struct nlist *Circuit1;
-static struct nlist *Circuit2;
 
 /* keep free lists of Elements and Nodes */
 static struct Element *ElementFreeList = NULL;
@@ -165,6 +146,10 @@ static struct ElementClass *ElementClassFreeList = NULL;
 static struct NodeClass *NodeClassFreeList = NULL;
 static struct ElementList *ElementListFreeList = NULL;
 static struct NodeList *NodeListFreeList = NULL;
+
+/* global variables to keep track of circuits */
+struct nlist *Circuit1;
+struct nlist *Circuit2;
 
 /* if TRUE, always partition ALL classes */
 int ExhaustiveSubdivision = 0;
@@ -177,17 +162,17 @@ static void PrintElement_List(struct Element *E)
   for (; E != NULL; E = E->next) {
     struct objlist *ob;
     Fprintf(stdout, "   Element %s, circuit: %hd hashval = %lX\n", 
-	   E->object->instance, E->graph, E->hashval);
+	   E->object->instance.name, E->graph, E->hashval);
     ob = E->object;
     for (nl = E->nodelist; nl != NULL; nl = nl->next) {
 #if 1
       Fprintf(stdout, "      %s:  node: %s name: %d pin magic: %lX nodeclassmagic: %lX\n",
-	     ob->name + strlen(ob->instance) + 1,
+	     ob->name + strlen(ob->instance.name) + 1,
 	     nl->node->object->name,  nl->node->object->node, 
 	     nl->pin_magic, nl->node->nodeclass->magic);
 #else
       Fprintf(stdout, "      %s: %lX  node: %lX num: %d magic: %lX nodeclassmag: %lX\n",
-	     ob->name + strlen(ob->instance) + 1,
+	     ob->name + strlen(ob->instance.name) + 1,
 	     (long)nl, (long)(nl->node), nl->node->object->node, 
 	     nl->magic, nl->node->nodeclass->magic);
 #endif
@@ -230,7 +215,7 @@ static void PrintNode_List(struct Node *N)
       Fprintf(stdout, "      %lX  element: %lX name: %s pin magic: "
 		"%lX class magic: %lX\n", 
 	     (long)el, (long)(el->subelement), 
-/*	     el->subelement->element->object->instance, */
+/*	     el->subelement->element->object->instance.name, */
 	     ElementList_Name(el),
 	     el->subelement->magic,
 	     el->subelement->element->elemclass->magic);
@@ -240,8 +225,8 @@ static void PrintNode_List(struct Node *N)
 }
 
 /* For PrintElementClasses() and PrintNodeClasses(), type is:	*/
-/*  0 -> Print legal partitions					*/
-/*  1 -> Print illegal partitions				*/
+/*  0 -> Print legal partitions	 (matching groups)		*/
+/*  1 -> Print illegal partitions (nonmatching groups)		*/
 /* -1 -> Print all partitions					*/
 
 /* Ignore "dolist" in test version */
@@ -254,21 +239,21 @@ void PrintElementClasses(struct ElementClass *EC, int type, int dolist)
 #endif
     if (EC->legalpartition) {
        if (type != 1) {
-          Fprintf(stdout, "Element class: count = %d; magic = %lX",
+          Fprintf(stdout, "Device class: count = %d; magic = %lX",
 			EC->count, EC->magic);
-	  Fprintf(stdout, " -- legal partition\n");
+	  Fprintf(stdout, " -- matching group\n");
           PrintElement_List(EC->elements);
        }
     }
     else {
        if (type != 0) {
-          Fprintf(stdout, "Element class: count = %d; magic = %lX",
+          Fprintf(stdout, "Device class: count = %d; magic = %lX",
 			EC->count, EC->magic);
-	  Fprintf(stdout, " -- ILLEGAL partition\n");
+	  Fprintf(stdout, " -- nonmatching group\n");
           PrintElement_List(EC->elements);
        }
     }
-    Printf("\n");
+    Fprintf(stdout, "\n");
     EC = EC->next;
   }
 }
@@ -281,17 +266,17 @@ void PrintNodeClasses(struct NodeClass *NC, int type, int dolist)
 #endif
     if (NC->legalpartition) {
        if (type != 1) {
-          Fprintf(stdout, "Node class: count = %d; magic = %lX",
+          Fprintf(stdout, "Net class: count = %d; magic = %lX",
 			NC->count, NC->magic);
-          Fprintf(stdout, " -- legal partition\n");
+          Fprintf(stdout, " -- matching group\n");
           PrintNode_List(NC->nodes);
        }
     }
     else {
        if (type != 0) {
-          Fprintf(stdout, "Node class: count = %d; magic = %lX",
+          Fprintf(stdout, "Net class: count = %d; magic = %lX",
 			NC->count, NC->magic);
-          Fprintf(stdout, " -- ILLEGAL partition\n");
+          Fprintf(stdout, " -- nonmatching group\n");
           PrintNode_List(NC->nodes);
        }
     }
@@ -323,12 +308,12 @@ void PrintElementClasses(struct ElementClass *EC, int type, int dolist)
     if (EC->legalpartition) {
        if (type != 1) {
 	  if (dolist == 0) {
-	     Printf("Element class: count = %d; magic = %lX", EC->count, EC->magic);
-	     Printf(" -- legal partition\n");
+	     Printf("Device class: count = %d; magic = %lX", EC->count, EC->magic);
+	     Printf(" -- matching group\n");
 
 	     for (E = EC->elements; E != NULL; E = E->next) 
                 Printf("   %-20s (circuit %hd) hash = %lX\n", 
-			E->object->instance, E->graph, E->hashval);
+			E->object->instance.name, E->graph, E->hashval);
 	  }
 #ifdef TCL_NETGEN
 	  else {
@@ -339,7 +324,7 @@ void PrintElementClasses(struct ElementClass *EC, int type, int dolist)
 	     for (E = EC->elements; E != NULL; E = E->next)
 	        Tcl_ListObjAppendElement(netgeninterp,
 			(E->graph == Circuit1->file) ? epart1 : epart2,
-			Tcl_NewStringObj(E->object->instance, -1));
+			Tcl_NewStringObj(E->object->instance.name, -1));
 		
 	     Tcl_ListObjAppendElement(netgeninterp, elist, epart1);
 	     Tcl_ListObjAppendElement(netgeninterp, elist, epart2);
@@ -351,12 +336,12 @@ void PrintElementClasses(struct ElementClass *EC, int type, int dolist)
     else {
        if (type != 0) {
 	  if (dolist == 0) {
-	     Printf("Element class: count = %d; magic = %lX", EC->count, EC->magic);
-             Printf(" -- ILLEGAL partition\n");
+	     Printf("Device class: count = %d; magic = %lX", EC->count, EC->magic);
+             Printf(" -- nonmatching group\n");
 
 	     for (E = EC->elements; E != NULL; E = E->next) 
                 Printf("   %-20s (circuit %hd) hash = %lX\n", 
-			E->object->instance, E->graph, E->hashval);
+			E->object->instance.name, E->graph, E->hashval);
 	  }
 #ifdef TCL_NETGEN
 	  else {
@@ -367,7 +352,7 @@ void PrintElementClasses(struct ElementClass *EC, int type, int dolist)
 	     for (E = EC->elements; E != NULL; E = E->next)
 	        Tcl_ListObjAppendElement(netgeninterp,
 				(E->graph == Circuit1->file) ? epart1 : epart2,
-				Tcl_NewStringObj(E->object->instance, -1));
+				Tcl_NewStringObj(E->object->instance.name, -1));
 
 	     Tcl_ListObjAppendElement(netgeninterp, elist, epart1);
 	     Tcl_ListObjAppendElement(netgeninterp, elist, epart2);
@@ -399,8 +384,8 @@ void PrintNodeClasses(struct NodeClass *NC, int type, int dolist)
     if (NC->legalpartition) {
        if (type != 1) {
 	  if (dolist == 0) {
-	     Printf("Node class: count = %d; magic = %lX", NC->count, NC->magic);
-	     Printf(" -- legal partition\n");
+	     Printf("Net class: count = %d; magic = %lX", NC->count, NC->magic);
+	     Printf(" -- matching group\n");
 	     for (N = NC->nodes; N != NULL; N = N->next) 
 	        Printf("   %-20s (circuit %hd) hash = %lX\n", 
 		     N->object->name, N->graph, N->hashval);
@@ -426,8 +411,8 @@ void PrintNodeClasses(struct NodeClass *NC, int type, int dolist)
     else {
        if (type != 0) {
 	  if (dolist == 0) {
-	     Printf("Node class: count = %d; magic = %lX", NC->count, NC->magic);
-	     Printf(" -- ILLEGAL partition\n");
+	     Printf("Net class: count = %d; magic = %lX", NC->count, NC->magic);
+	     Printf(" -- nonmatching group\n");
 	     for (N = NC->nodes; N != NULL; N = N->next) 
 	        Printf("   %-20s (circuit %hd) hash = %lX\n", 
 		     N->object->name, N->graph, N->hashval);
@@ -469,10 +454,10 @@ void SummarizeNodeClasses(struct NodeClass *NC)
 #ifdef TCL_NETGEN
     if (check_interrupt()) break;
 #endif
-    Printf("Node class: count = %d; magic = %lX; hash = %ld", 
+    Printf("Net class: count = %d; magic = %lX; hash = %ld", 
 	   NC->count, NC->magic, NC->nodes->hashval);
-    if (NC->legalpartition) Printf(" -- legal partition\n");
-    else Printf(" -- ILLEGAL partition\n");
+    if (NC->legalpartition) Printf(" -- matching group\n");
+    else Printf(" -- nonmatching group\n");
     NC = NC->next;
   }
 }
@@ -488,10 +473,10 @@ void SummarizeElementClasses(struct ElementClass *EC)
 #ifdef TCL_NETGEN
     if (check_interrupt()) break;
 #endif
-    Printf("Element class: count = %d; magic = %lX; hash = %ld", 
+    Printf("Device class: count = %d; magic = %lX; hash = %ld", 
 	   EC->count, EC->magic, EC->elements->hashval);
-    if (EC->legalpartition) Printf(" -- legal partition\n");
-    else Printf(" -- ILLEGAL partition\n");
+    if (EC->legalpartition) Printf(" -- matching group\n");
+    else Printf(" -- nonmatching group\n");
     EC = EC->next;
   }
 }
@@ -588,21 +573,21 @@ struct FormattedList *FormatBadElementFragment(struct Element *E)
   elemlist = (struct FormattedList *)MALLOC(sizeof(struct FormattedList));
   if (elemlist == NULL) {
      Fprintf(stdout, "Unable to allocated memory to print element fanout.\n");
-     return;
+     return NULL;
   }
 
   fanout = 0;
   for (nl = E->nodelist; nl != NULL; nl = nl->next) fanout++;
   nodes = (struct NodeList **)CALLOC(fanout, sizeof(struct NodeList *));
   if (nodes == NULL) {
-    Printf("Unable to allocate memory to print element fanout.\n");
+    Fprintf(stderr, "Unable to allocate memory to print element fanout.\n");
     FREE(elemlist);
-    return;
+    return NULL;
   }
 
   elemlist->flist = (struct FanoutList *)CALLOC(fanout, sizeof(struct FanoutList));
   elemlist->fanout = fanout;
-  elemlist->name = E->object->instance;
+  elemlist->name = E->object->instance.name;
   
   fanout = 0;
   for (nl = E->nodelist; nl != NULL; nl = nl->next) 
@@ -633,7 +618,10 @@ struct FormattedList *FormatBadElementFragment(struct Element *E)
 	    count++;
 
          elemlist->flist[k].count = count;
-         elemlist->flist[k].name = ob->name + strlen(ob->instance) + 1;
+	 if (*ob->name != *ob->instance.name)	// e.g., "port_match_error"
+            elemlist->flist[k].name = ob->name;
+	 else
+            elemlist->flist[k].name = ob->name + strlen(ob->instance.name) + 1;
          elemlist->flist[k].permute = (char)1;
          k++;
       }
@@ -647,7 +635,10 @@ struct FormattedList *FormatBadElementFragment(struct Element *E)
       m = k;
       for (j = i; j < fanout; j++) {
 	if (nodes[j] != NULL && nodes[i]->pin_magic == nodes[j]->pin_magic) {
-          elemlist->flist[k].name = ob2->name + strlen(ob2->instance) + 1;
+	  if (*ob2->name != *ob2->instance.name)  // e.g., "port_match_error"
+            elemlist->flist[k].name = ob2->name;
+	  else
+            elemlist->flist[k].name = ob2->name + strlen(ob2->instance.name) + 1;
           elemlist->flist[k].permute = (char)0;
           elemlist->flist[k].count = -1;	// Put total count at end
 	  k++;
@@ -686,7 +677,8 @@ struct FormattedList *FormatBadElementFragment(struct Element *E)
 	  k++;
 	}
       }
-      elemlist->flist[k - 1].permute = (char)1;	 /* Denotes end of list */
+      if (k > 0)
+         elemlist->flist[k - 1].permute = (char)1;	 /* Denotes end of list */
 
     }
     nodes[i] = NULL;
@@ -711,14 +703,14 @@ void PrintBadElementFragment(struct Element *E)
   struct objlist *ob;
   int count, i, j;
 
-  Fprintf(stdout, "  (%d): %s",E->graph, E->object->instance);
+  Fprintf(stdout, "  (%d): %s",E->graph, E->object->instance.name);
   Ftab(stdout, 20);
 
   fanout = 0;
   for (nl = E->nodelist; nl != NULL; nl = nl->next) fanout++;
   nodes = (struct NodeList **)CALLOC(fanout, sizeof(struct NodeList *));
   if (nodes == NULL) {
-    Printf("Unable to allocate memory to print element fanout.\n");
+    Fprintf(stderr, "Unable to allocate memory to print element fanout.\n");
     return;
   }
   
@@ -753,7 +745,7 @@ void PrintBadElementFragment(struct Element *E)
 			elems = elems->next)
 	    count++;
       if (i != 0) Fprintf(stdout, "; ");
-      Fprintf(stdout, "%s = %d", ob->name + strlen(ob->instance) + 1, count);
+      Fprintf(stdout, "%s = %d", ob->name + strlen(ob->instance.name) + 1, count);
     }
     else {
       struct objlist *ob2;
@@ -766,7 +758,7 @@ void PrintBadElementFragment(struct Element *E)
       for (j = i; j < fanout; j++) {
 	if (nodes[j] != NULL && nodes[i]->pin_magic == nodes[j]->pin_magic) {
 	  if (i != j) Fprintf(stdout, ", ");
-	  Fprintf(stdout, "%s", ob2->name + strlen(ob2->instance) + 1);
+	  Fprintf(stdout, "%s", ob2->name + strlen(ob2->instance.name) + 1);
 	}
 	ob2 = ob2->next;
       }
@@ -837,14 +829,14 @@ struct FormattedList *FormatBadNodeFragment(struct Node *N)
   pins = (struct ElementList **)CALLOC(fanout, sizeof(struct ElementList *));
   if (pins == NULL) {
     Fprintf(stdout, "Unable to allocate memory to print node fanout.\n");
-    return;
+    return NULL;
   }
 
   nodelist = (struct FormattedList *)MALLOC(sizeof(struct FormattedList));
   if (nodelist == NULL) {
     Fprintf(stdout, "Unable to allocate memory to print node fanout.\n");
     FREE(pins);
-    return;
+    return NULL;
   }
   nodelist->flist = (struct FanoutList *)CALLOC(fanout, sizeof(struct FanoutList));
   nodelist->fanout = fanout;
@@ -865,20 +857,20 @@ struct FormattedList *FormatBadNodeFragment(struct Node *N)
 
       count = 1; /* remember: pins[i] contacts it */
       permute = (char)0;
-      model = pins[i]->subelement->element->object->model;
+      model = pins[i]->subelement->element->object->model.class;
       /* find the first pin on that element with the same magic number */
       pinname = "can't happen";
       ob = pins[i]->subelement->element->object;
       for (n = pins[i]->subelement->element->nodelist; n != NULL; n = n->next){
 	if (n->pin_magic == pins[i]->subelement->pin_magic) {
 	  if (permute == 0) {
-	     pinname = ob->name + strlen(ob->instance) + 1;
+	     pinname = ob->name + strlen(ob->instance.name) + 1;
 	  }
 	  else {
 	     char *pinsave = pinname;
 	     pinname = (char *)MALLOC(strlen(pinsave) + strlen(ob->name +
-			strlen(ob->instance) + 1) + 2);
-	     sprintf(pinname, "%s|%s", pinsave, ob->name + strlen(ob->instance) + 1);
+			strlen(ob->instance.name) + 1) + 2);
+	     sprintf(pinname, "%s|%s", pinsave, ob->name + strlen(ob->instance.name) + 1);
 	     if (permute > 1) FREE(pinsave);
 	  }
 	  permute++;
@@ -891,7 +883,7 @@ struct FormattedList *FormatBadNodeFragment(struct Node *N)
       for (j = i+1; j < fanout; j++) {
 	if (pins[j] != NULL && 
 	    (*matchfunc) (model,
-		  pins[j]->subelement->element->object->model) &&
+		  pins[j]->subelement->element->object->model.class) &&
 	    pins[i]->subelement->pin_magic == pins[j]->subelement->pin_magic) {
 	      count++;
 	      nodelist->fanout--;
@@ -956,13 +948,13 @@ void PrintBadNodeFragment(struct Node *N)
       struct objlist *ob;
 
       count = 1; /* remember: pins[i] contacts it */
-      model = pins[i]->subelement->element->object->model;
+      model = pins[i]->subelement->element->object->model.class;
       /* find the first pin on that element with the same magic number */
       pinname = "can't happen";
       ob = pins[i]->subelement->element->object;
       for (n = pins[i]->subelement->element->nodelist; n != NULL; n = n->next){
 	if (n->pin_magic == pins[i]->subelement->pin_magic) {
-	  pinname = ob->name + strlen(ob->instance) + 1;
+	  pinname = ob->name + strlen(ob->instance.name) + 1;
 	  break;    /* MAS 3/13/91 */
 	}
 	ob = ob->next;
@@ -973,7 +965,7 @@ void PrintBadNodeFragment(struct Node *N)
       for (j = i+1; j < fanout; j++) {
 	if (pins[j] != NULL && 
 	    (*matchfunc)(model,
-		  pins[j]->subelement->element->object->model) &&
+		  pins[j]->subelement->element->object->model.class) &&
 	    pins[i]->subelement->pin_magic == pins[j]->subelement->pin_magic) {
 	      count++;
 	      pins[j] = NULL;
@@ -989,17 +981,177 @@ void PrintBadNodeFragment(struct Node *N)
   FREE(pins);
 }
 
+#ifdef TCL_NETGEN
+
+/*----------------------------------------------------------------------*/
+/* Generate list of illegal element partitions as a nested list.	*/
+/* The outermost list is a list of groups.  Inside each group is two	*/
+/* lists, one for each circuit.  In each circuit list is a list of	*/
+/* devices in the group.  Each device is a list of name and number of	*/
+/* elements.  								*/
+/*----------------------------------------------------------------------*/
+
+Tcl_Obj *ListElementClasses(int legal)
+{
+  struct FormattedList **elist1, **elist2;
+  struct ElementClass *escan;
+  int numlists1, numlists2, n1, n2, n, f1, f2, i, maxf;
+  char *estr;
+
+  Tcl_Obj *lobj, *c1obj, *c2obj, *e1obj, *e2obj, *sobj;
+  Tcl_Obj *g1obj, *g2obj, *dobj;
+
+  dobj = Tcl_NewListObj(0, NULL);
+  for (escan = ElementClasses; escan != NULL; escan = escan->next) {
+    if (legal == escan->legalpartition) {
+      struct Element *E;
+
+      lobj = Tcl_NewListObj(0, NULL);
+      g1obj = Tcl_NewListObj(0, NULL);
+      g2obj = Tcl_NewListObj(0, NULL);
+
+      numlists1 = numlists2 = 0;
+      for (E = escan->elements; E != NULL; E = E->next)
+      {
+	 if (E->graph == Circuit1->file)
+	    numlists1++;
+	 else
+	    numlists2++;
+      }
+      elist1 = (struct FormattedList **)CALLOC(numlists1,
+		sizeof(struct FormattedList *));
+      elist2 = (struct FormattedList **)CALLOC(numlists2,
+		sizeof(struct FormattedList *));
+
+      n1 = n2 = 0;
+
+      for (E = escan->elements; E != NULL; E = E->next) {
+	if (E->graph == Circuit1->file) {
+	   elist1[n1] = FormatBadElementFragment(E);
+	   n1++;
+	}
+	else {
+	   elist2[n2] = FormatBadElementFragment(E);
+	   n2++;
+	}
+      }
+
+      for (n = 0; n < ((n1 > n2) ? n1 : n2); n++) {
+         c1obj = Tcl_NewListObj(0, NULL);
+         c2obj = Tcl_NewListObj(0, NULL);
+
+         e1obj = Tcl_NewListObj(0, NULL);
+         e2obj = Tcl_NewListObj(0, NULL);
+
+	 if (n < n1) {
+	    estr = elist1[n]->name;
+	    if (*estr == '/') estr++;	// Remove leading slash, if any
+	    Tcl_ListObjAppendElement(netgeninterp, c1obj, Tcl_NewStringObj(estr, -1));
+	 }
+	 else
+	    Tcl_ListObjAppendElement(netgeninterp, c1obj,
+			Tcl_NewStringObj("(no matching instance)", -1));
+	 Tcl_ListObjAppendElement(netgeninterp, c1obj, e1obj);
+	 if (n < n2) {
+	    estr = elist2[n]->name;
+	    if (*estr == '/') estr++;	// Remove leading slash, if any
+	    Tcl_ListObjAppendElement(netgeninterp, c2obj, Tcl_NewStringObj(estr, -1));
+	 }
+	 else
+	    Tcl_ListObjAppendElement(netgeninterp, c2obj,
+			Tcl_NewStringObj("(no matching instance)", -1));
+	 Tcl_ListObjAppendElement(netgeninterp, c2obj, e2obj);
+
+	 if (n >= n1)
+	    maxf = elist2[n]->fanout;
+	 else if (n >= n2)
+	    maxf = elist1[n]->fanout;
+	 else
+	    maxf = (elist1[n]->fanout > elist2[n]->fanout) ?
+			elist1[n]->fanout : elist2[n]->fanout;
+
+	 f1 = f2 = 0;
+	 while ((f1 < maxf) || (f2 < maxf)) {
+	    if (n < n1) {
+	       if (f1 < elist1[n]->fanout) {
+		  if (elist1[n]->flist[f1].permute == (char)1) {
+		     sobj = Tcl_NewListObj(0, NULL);
+		     Tcl_ListObjAppendElement(netgeninterp, sobj,
+				Tcl_NewStringObj(elist1[n]->flist[f1].name, -1));
+		     Tcl_ListObjAppendElement(netgeninterp, sobj,
+				Tcl_NewIntObj(elist1[n]->flist[f1].count));
+		  }
+		  else {
+		     sobj = Tcl_NewListObj(0, NULL);
+		     while (1) {
+			Tcl_ListObjAppendElement(netgeninterp, sobj,
+				Tcl_NewStringObj(elist1[n]->flist[f1].name, -1));
+			Tcl_ListObjAppendElement(netgeninterp, sobj,
+				Tcl_NewIntObj(elist1[n]->flist[f1].count));
+		        if (elist1[n]->flist[f1].permute != (char)0) break;
+			f1++;
+		     }
+		  }
+		  Tcl_ListObjAppendElement(netgeninterp, e1obj, sobj);
+	       }
+	    }
+	    f1++;
+	    if (n < n2) {
+	       if (f2 < elist2[n]->fanout) {
+		  if (elist2[n]->flist[f2].permute == (char)1) {
+		     sobj = Tcl_NewListObj(0, NULL);
+		     Tcl_ListObjAppendElement(netgeninterp, sobj,
+				Tcl_NewStringObj(elist2[n]->flist[f2].name, -1));
+		     Tcl_ListObjAppendElement(netgeninterp, sobj,
+				Tcl_NewIntObj(elist2[n]->flist[f2].count));
+		  }
+		  else {
+		     sobj = Tcl_NewListObj(0, NULL);
+		     while (1) {
+			Tcl_ListObjAppendElement(netgeninterp, sobj,
+				Tcl_NewStringObj(elist2[n]->flist[f2].name, -1));
+			Tcl_ListObjAppendElement(netgeninterp, sobj,
+				Tcl_NewIntObj(elist2[n]->flist[f2].count));
+		        if (elist2[n]->flist[f2].permute != (char)0) break;
+			f2++;
+		     }
+		  }
+		  Tcl_ListObjAppendElement(netgeninterp, e2obj, sobj);
+	       }
+	    }
+	    f2++;
+	 }
+         Tcl_ListObjAppendElement(netgeninterp, g1obj, c1obj);
+         Tcl_ListObjAppendElement(netgeninterp, g2obj, c2obj);
+      }
+      Tcl_ListObjAppendElement(netgeninterp, lobj, g1obj);
+      Tcl_ListObjAppendElement(netgeninterp, lobj, g2obj);
+      Tcl_ListObjAppendElement(netgeninterp, dobj, lobj);
+
+      FreeFormattedLists(elist1, numlists1);
+      FreeFormattedLists(elist2, numlists2);
+    }
+  }
+  return dobj;
+}
+
+#endif
+
 /* 
  *---------------------------------------------------------------------
  *---------------------------------------------------------------------
  */
 
-void FormatIllegalElementClasses(void)
+void FormatIllegalElementClasses()
 {
   struct FormattedList **elist1, **elist2;
   struct ElementClass *escan;
   int found, numlists1, numlists2, n1, n2, n, f1, f2, i, maxf;
   char ostr[89];
+  char *estr;
+  char permname[80];
+  char permcount[80];
+  int bytesleft;
 
   found = 0;
   for (escan = ElementClasses; escan != NULL; escan = escan->next)
@@ -1007,8 +1159,8 @@ void FormatIllegalElementClasses(void)
       struct Element *E;
 
       if (!found) {
-	Fprintf(stdout, "ILLEGAL element partition: ");
-	Fprintf(stdout, "class fragments follow (with node fanout counts):\n");
+	Fprintf(stdout, "DEVICE mismatches: ");
+	Fprintf(stdout, "Class fragments follow (with node fanout counts):\n");
 
 	/* Print in side-by-side format */
 
@@ -1070,12 +1222,18 @@ void FormatIllegalElementClasses(void)
 	 }
 	 for (i = 0; i < 43; i++) *(ostr + i) = ' ';
 	 for (i = 44; i < 87; i++) *(ostr + i) = ' ';
-	 if (n < n1)
-	    snprintf(ostr, 43, "Instance: %s", elist1[n]->name);
+	 if (n < n1) {
+	    estr = elist1[n]->name;
+	    if (*estr == '/') estr++;	// Remove leading slash, if any
+	    snprintf(ostr, 43, "Instance: %s", estr);
+	 }
 	 else
 	    snprintf(ostr, 43, "(no matching instance)");
-	 if (n < n2)
-	    snprintf(ostr + 44, 43, "Instance: %s", elist2[n]->name);
+	 if (n < n2) {
+	    estr = elist2[n]->name;
+	    if (*estr == '/') estr++;	// Remove leading slash, if any
+	    snprintf(ostr + 44, 43, "Instance: %s", estr);
+	 }
 	 else
 	    snprintf(ostr + 44, 43, "(no matching instance)");
 	 for (i = 0; i < 88; i++) if (*(ostr + i) == '\0') *(ostr + i) = ' ';
@@ -1100,20 +1258,20 @@ void FormatIllegalElementClasses(void)
 				elist1[n]->flist[f1].count);
 		  }
 		  else {
-		     char permname[80];
-		     char permcount[80];
+		     bytesleft = 76;
 		     char value[10];
 		     sprintf(permname, "(");
 		     sprintf(permcount, "(");
 		     while (elist1[n]->flist[f1].permute == (char)0) {
-			strcat(permname, elist1[n]->flist[f1].name);
+			strncat(permname, elist1[n]->flist[f1].name, bytesleft);
+			bytesleft -= strlen(elist1[n]->flist[f1].name);
 			strcat(permname, ",");
 			sprintf(value, "%d", elist1[n]->flist[f1].count);
 			strcat(permcount, value);
 			strcat(permcount, ",");
 			f1++;
 		     }
-		     strcat(permname, elist1[n]->flist[f1].name);
+		     strncat(permname, elist1[n]->flist[f1].name, bytesleft);
 		     strcat(permname, ")");
 		     sprintf(value, "%d", elist1[n]->flist[f1].count);
 		     strcat(permcount, value);
@@ -1130,20 +1288,20 @@ void FormatIllegalElementClasses(void)
 				elist2[n]->flist[f2].count);
 		  }
 		  else {
-		     char permname[80];
-		     char permcount[80];
+		     bytesleft = 76;
 		     char value[10];
 		     sprintf(permname, "(");
 		     sprintf(permcount, "(");
 		     while (elist2[n]->flist[f2].permute == (char)0) {
-			strcat(permname, elist2[n]->flist[f2].name);
+			strncat(permname, elist2[n]->flist[f2].name, bytesleft);
+			bytesleft -= strlen(elist2[n]->flist[f2].name);
 			strcat(permname, ",");
 			sprintf(value, "%d", elist2[n]->flist[f2].count);
 			strcat(permcount, value);
 			strcat(permcount, ",");
 			f2++;
 		     }
-		     strcat(permname, elist2[n]->flist[f2].name);
+		     strncat(permname, elist2[n]->flist[f2].name, bytesleft);
 		     strcat(permname, ")");
 		     sprintf(value, "%d", elist2[n]->flist[f2].count);
 		     strcat(permcount, value);
@@ -1182,8 +1340,8 @@ void PrintIllegalElementClasses(void)
       struct Element *E;
 
       if (!found) {
-	Fprintf(stdout, "ILLEGAL element partition: ");
-	Fprintf(stdout, "class fragments follow (with node fanout counts):\n");
+	Fprintf(stdout, "DEVICE mismatches: ");
+	Fprintf(stdout, "Class fragments follow (with node fanout counts):\n");
       }
       found = 1;
       for (E = escan->elements; E != NULL; E = E->next)
@@ -1212,12 +1370,134 @@ void FreeFormattedLists(struct FormattedList **nlists, int numlists)
    FREE(nlists);
 }
 
+#ifdef TCL_NETGEN
+
+Tcl_Obj *ListNodeClasses(int legal)
+{
+  struct FormattedList **nlists1, **nlists2;
+  struct NodeClass *nscan;
+  int numlists1, numlists2, n1, n2, n, f, i, maxf;
+
+  Tcl_Obj *lobj, *c1obj, *c2obj, *n1obj, *n2obj, *sobj;
+  Tcl_Obj *dobj, *g1obj, *g2obj;
+
+  dobj = Tcl_NewListObj(0, NULL);
+  for (nscan = NodeClasses; nscan != NULL; nscan = nscan->next) {
+    if (legal == nscan->legalpartition) {
+      struct Node *N;
+
+      lobj = Tcl_NewListObj(0, NULL);
+      g1obj = Tcl_NewListObj(0, NULL);
+      g2obj = Tcl_NewListObj(0, NULL);
+
+      numlists1 = numlists2 = 0;
+      for (N = nscan->nodes; N != NULL; N = N->next) {
+	 if (N->graph == Circuit1->file)
+	    numlists1++;
+	 else
+	    numlists2++;
+      }
+      nlists1 = (struct FormattedList **)CALLOC(numlists1,
+		sizeof(struct FormattedNodeList *));
+      nlists2 = (struct FormattedList **)CALLOC(numlists2,
+		sizeof(struct FormattedList *));
+
+      n1 = n2 = 0; 
+      for (N = nscan->nodes; N != NULL; N = N->next) {
+	if (N->graph == Circuit1->file) {
+	   nlists1[n1] = FormatBadNodeFragment(N);
+	   n1++;
+	}
+	else {
+	   nlists2[n2] = FormatBadNodeFragment(N);
+	   n2++;
+	}
+      }
+
+      for (n = 0; n < ((n1 > n2) ? n1 : n2); n++) {
+         c1obj = Tcl_NewListObj(0, NULL);
+         c2obj = Tcl_NewListObj(0, NULL);
+
+         n1obj = Tcl_NewListObj(0, NULL);
+         n2obj = Tcl_NewListObj(0, NULL);
+
+	 if (n < n1)
+	    Tcl_ListObjAppendElement(netgeninterp, c1obj,
+			Tcl_NewStringObj(nlists1[n]->name, -1));
+	 else
+	    Tcl_ListObjAppendElement(netgeninterp, c1obj,
+			Tcl_NewStringObj("(no matching net)", -1));
+	 Tcl_ListObjAppendElement(netgeninterp, c1obj, n1obj);
+
+	 if (n < n2)
+	    Tcl_ListObjAppendElement(netgeninterp, c2obj,
+			Tcl_NewStringObj(nlists2[n]->name, -1));
+	 else
+	    Tcl_ListObjAppendElement(netgeninterp, c2obj,
+			Tcl_NewStringObj("(no matching net)", -1));
+	 Tcl_ListObjAppendElement(netgeninterp, c2obj, n2obj);
+
+	 if (n >= n1)
+	    maxf = nlists2[n]->fanout;
+	 else if (n >= n2)
+	    maxf = nlists1[n]->fanout;
+	 else
+	    maxf = (nlists1[n]->fanout > nlists2[n]->fanout) ?
+			nlists1[n]->fanout : nlists2[n]->fanout;
+
+	 for (f = 0; f < maxf; f++) {
+	    if (n < n1)
+	       if (f < nlists1[n]->fanout) {
+		  sobj = Tcl_NewListObj(0, NULL);
+		  Tcl_ListObjAppendElement(netgeninterp, sobj,
+			Tcl_NewStringObj(nlists1[n]->flist[f].model, -1));
+		  Tcl_ListObjAppendElement(netgeninterp, sobj,
+			Tcl_NewStringObj(nlists1[n]->flist[f].name, -1));
+		  Tcl_ListObjAppendElement(netgeninterp, sobj,
+			Tcl_NewIntObj(nlists1[n]->flist[f].count));
+
+		  if (nlists1[n]->flist[f].permute > 1)
+		     FREE(nlists1[n]->flist[f].name);
+
+		  Tcl_ListObjAppendElement(netgeninterp, n1obj, sobj);
+	       }
+	    if (n < n2)
+	       if (f < nlists2[n]->fanout) {
+		  sobj = Tcl_NewListObj(0, NULL);
+		  Tcl_ListObjAppendElement(netgeninterp, sobj,
+			Tcl_NewStringObj(nlists2[n]->flist[f].model, -1));
+		  Tcl_ListObjAppendElement(netgeninterp, sobj,
+			Tcl_NewStringObj(nlists2[n]->flist[f].name, -1));
+		  Tcl_ListObjAppendElement(netgeninterp, sobj,
+			Tcl_NewIntObj(nlists2[n]->flist[f].count));
+
+		  if (nlists2[n]->flist[f].permute > 1)
+		     FREE(nlists2[n]->flist[f].name);
+		  Tcl_ListObjAppendElement(netgeninterp, n2obj, sobj);
+	       }
+	 }
+         Tcl_ListObjAppendElement(netgeninterp, g1obj, c1obj);
+         Tcl_ListObjAppendElement(netgeninterp, g2obj, c2obj);
+      }
+      Tcl_ListObjAppendElement(netgeninterp, lobj, g1obj);
+      Tcl_ListObjAppendElement(netgeninterp, lobj, g2obj);
+      Tcl_ListObjAppendElement(netgeninterp, dobj, lobj);
+
+      FreeFormattedLists(nlists1, numlists1);
+      FreeFormattedLists(nlists2, numlists2);
+    }
+  }
+  return dobj;
+}
+
+#endif
+
 /* 
  *---------------------------------------------------------------------
  *---------------------------------------------------------------------
  */
 
-void FormatIllegalNodeClasses(void)
+void FormatIllegalNodeClasses()
 {
   struct FormattedList **nlists1, **nlists2;
   struct NodeClass *nscan;
@@ -1231,8 +1511,8 @@ void FormatIllegalNodeClasses(void)
       struct Node *N;
 
       if (!found) {
-        Fprintf(stdout, "ILLEGAL node partition: ");
-	Fprintf(stdout, "class fragments follow (with fanout counts):\n");
+	Fprintf(stdout, "NET mismatches: ");
+	Fprintf(stdout, "Class fragments follow (with fanout counts):\n");
 
 	/* Print in side-by-side format */
 	*(ostr + 43) =  '|';
@@ -1373,8 +1653,8 @@ void PrintIllegalNodeClasses(void)
 
       if (!found) {
 	Fprintf(stdout, "\n");
-        Fprintf(stdout, "ILLEGAL node partition: ");
-	Fprintf(stdout, "class fragments follow (with fanouts):\n");
+	Fprintf(stdout, "NET mismatches: ");
+	Fprintf(stdout, "Class fragments follow (with fanouts):\n");
       }
       found = 1;
       for (N = nscan->nodes; N != NULL; N = N->next) {
@@ -1409,7 +1689,6 @@ int ElementListAllocated;
 int NodeListAllocated;
 #endif
 
-INLINE
 struct Element *GetElement(void)
 {
 	struct Element *new_element;	
@@ -1427,14 +1706,12 @@ struct Element *GetElement(void)
 	return(new_element);
 }
 
-INLINE
 void FreeElement(struct Element *old)
 {
 	old->next = ElementFreeList;
 	ElementFreeList = old;
 }
 
-INLINE
 struct Node *GetNode(void)
 {
 	struct Node *new_node;	
@@ -1452,14 +1729,12 @@ struct Node *GetNode(void)
 	return(new_node);
 }
 
-INLINE
 void FreeNode(struct Node *old)
 {
 	old->next = NodeFreeList;
 	NodeFreeList = old;
 }
 
-INLINE
 struct ElementClass *GetElementClass(void)
 {
 	struct ElementClass *new_elementclass;	
@@ -1479,14 +1754,12 @@ struct ElementClass *GetElementClass(void)
 	return(new_elementclass);
 }
 
-INLINE
 void FreeElementClass(struct ElementClass *old)
 {
 	old->next = ElementClassFreeList;
 	ElementClassFreeList = old;
 }
 
-INLINE
 struct NodeClass *GetNodeClass(void)
 {
 	struct NodeClass *new_nodeclass;	
@@ -1506,14 +1779,12 @@ struct NodeClass *GetNodeClass(void)
 	return(new_nodeclass);
 }
 
-INLINE
 void FreeNodeClass(struct NodeClass *old)
 {
 	old->next = NodeClassFreeList;
 	NodeClassFreeList = old;
 }
 
-INLINE
 struct ElementList *GetElementList(void)
 {
 	struct ElementList *new_elementlist;	
@@ -1532,14 +1803,12 @@ struct ElementList *GetElementList(void)
 	return(new_elementlist);
 }
 
-INLINE
 void FreeElementList(struct ElementList *old)
 {
 	old->next = ElementListFreeList;
 	ElementListFreeList = old;
 }
 
-INLINE
 struct NodeList *GetNodeList(void)
 {
 	struct NodeList *new_nodelist;	
@@ -1557,7 +1826,6 @@ struct NodeList *GetNodeList(void)
 	return(new_nodelist);
 }
 
-INLINE
 void FreeNodeList(struct NodeList *old)
 {
 	old->next = NodeListFreeList;
@@ -1567,17 +1835,17 @@ void FreeNodeList(struct NodeList *old)
 #ifdef DEBUG_ALLOC
 void PrintCoreStats(void)
 {
-  Fprintf(stdout, "ElementClass records allocated = %d, size = %d\n",
+  Fprintf(stdout, "DeviceClass records allocated = %d, size = %d\n",
 	  ElementClassAllocated, sizeof(struct ElementClass));
-  Fprintf(stdout, "Element records allocated = %d, size = %d\n",
+  Fprintf(stdout, "Device records allocated = %d, size = %d\n",
 	  ElementAllocated, sizeof(struct Element));
-  Fprintf(stdout, "NodeList records allocated = %d, size = %d\n",
+  Fprintf(stdout, "NetList records allocated = %d, size = %d\n",
 	  NodeListAllocated, sizeof(struct NodeList));
-  Fprintf(stdout, "NodeClass records allocated = %d, size = %d\n",
+  Fprintf(stdout, "NetClass records allocated = %d, size = %d\n",
 	  NodeClassAllocated, sizeof(struct NodeClass));
-  Fprintf(stdout, "Node records allocated = %d, size = %d\n",
+  Fprintf(stdout, "Net records allocated = %d, size = %d\n",
 	  NodeAllocated, sizeof(struct Node));
-  Fprintf(stdout, "ElementList records allocated = %d, size = %d\n",
+  Fprintf(stdout, "DeviceList records allocated = %d, size = %d\n",
 	  ElementListAllocated, sizeof(struct ElementList));
   Fprintf(stdout, "Total accounted-for memory: %d\n",
 	  ElementClassAllocated * sizeof(struct ElementClass) +
@@ -1687,7 +1955,7 @@ struct Element *CreateElementList(char *name, short graph)
   /* get a pointer to the cell */	
   tp = LookupCellFile(name, graph);
   if (tp == NULL) {
-    Printf ("No cell '%s' found.\n", name);
+    Fprintf(stderr, "No cell '%s' found.\n", name);
     return(NULL);
   }
 
@@ -1740,7 +2008,7 @@ struct Node *CreateNodeList(char *name, short graph)
   /* get a pointer to the cell */	
   tp = LookupCellFile(name, graph);
   if (tp == NULL) {
-    Printf ("No cell '%s' found.\n", name);
+    Fprintf(stderr, "No cell '%s' found.\n", name);
     return(NULL);
   }
 
@@ -1753,7 +2021,7 @@ struct Node *CreateNodeList(char *name, short graph)
   LookupElementList = 
     (struct ElementList **)CALLOC(maxnode + 1, sizeof(struct ElementList *));
   if (LookupElementList == NULL) {
-    Printf("Unable to allocate space for lookup table\n");
+    Fprintf(stderr, "Unable to allocate space for lookup table\n");
     return(NULL);
   }
 
@@ -1804,35 +2072,56 @@ struct Node *CreateNodeList(char *name, short graph)
   return (head);
 }
 
-void CreateLists(char *name, short graph)
 /* creates two lists of the correct 'shape', then traverses nodes
-   in sequence to link up 'subelement' field of ElementList,
-	then 'node' field of NodeList structures.
-*/		
+ * in sequence to link up 'subelement' field of ElementList,
+ *	then 'node' field of NodeList structures.
+ *
+ * Return the number of devices combined by serial/parallel merging
+ */		
+
+int CreateLists(char *name, short graph)
 {
   struct Element *ElementScan;
   struct ElementList *EListScan;
   struct NodeList *NListScan;
   struct objlist *ob;
   struct nlist *tp;
+  int ppass, spass, pcnt, scnt, total;
 	
   /* get a pointer to the cell */	
   tp = LookupCellFile(name, graph);
   if (tp == NULL) {
-    Printf ("No cell '%s' found.\n", name);
-    return;
+    Fprintf(stderr, "No cell '%s' found.\n", name);
+    return 0;
   }
 
   if (Circuit1 == NULL) Circuit1 = tp;
   else if (Circuit2 == NULL) Circuit2 = tp;
   else {
-    Printf ("Error: CreateLists() called more than twice without a reset.\n");
-    return;
+    Fprintf(stderr, "Error: CreateLists() called more than twice without a reset.\n");
+    return 0;
+  }
+
+  /* Parallel and serial combinations.  Run until networks of	*/
+  /* devices are resolved into a single device with the network	*/
+  /* represented by a number of property records.		*/
+
+  total = 0;
+  for (ppass = 0; ; ppass++) {
+     pcnt = CombineParallel(name, graph);
+     total += pcnt;
+     if (ppass > 0 && pcnt == 0) break;
+     for (spass = 0; ; spass++) {
+        scnt = CombineSerial(name, graph);
+        total += scnt;
+        if (scnt == 0) break;
+     }
+     if (spass == 0) break;
   }
 
   Elements = CreateElementList(name, graph);
   Nodes = CreateNodeList(name, graph);
-  if (LookupElementList == NULL) return;
+  if (LookupElementList == NULL) return total;
 
   ElementScan = NULL;
   NListScan = NULL; /* just to stop the compiler from bitching */
@@ -1858,6 +2147,7 @@ void CreateLists(char *name, short graph)
 
   FREE(LookupElementList);
   LookupElementList = NULL;
+  return total;
 }
 
 #else
@@ -1874,7 +2164,7 @@ struct Node *CreateNodeList(char *name, short graph)
   /* get a pointer to the cell */	
   tp = LookupCellFile(name, graph);
   if (tp == NULL) {
-    Printf ("No cell '%s' found.\n", name);
+    Fprintf(stderr, "No cell '%s' found.\n", name);
     return(NULL);
   }
 
@@ -1927,11 +2217,14 @@ struct Node *CreateNodeList(char *name, short graph)
   return (head);
 }
 
-void CreateLists(char *name, short graph)
 /* creates two lists of the correct 'shape', then traverses nodes
-   in sequence to link up 'subelement' field of ElementList,
-	then 'node' field of NodeList structures.
-*/		
+ * in sequence to link up 'subelement' field of ElementList,
+ * then 'node' field of NodeList structures.
+ *
+ * Return the number of devices combined by serial/parallel merging
+ */		
+
+int CreateLists(char *name, short graph)
 {
   struct Element *E, *ElementScan;
   struct Node *N, *NodeScan;
@@ -1939,23 +2232,40 @@ void CreateLists(char *name, short graph)
   struct NodeList *NListScan;
   struct objlist *ob, *obscan;
   struct nlist *tp;
-  int node;
+  int node, ppass, spass, pcnt, scnt, total;
 	
   /* get a pointer to the cell */	
   tp = LookupCellFile(name, graph);
   if (tp == NULL) {
-    Printf ("No cell '%s' found.\n", name);
-    return;
+    Fprintf(stderr, "No cell '%s' found.\n", name);
+    return 0;
   }
 
   if (Circuit1 == NULL) Circuit1 = tp;
   else if (Circuit2 == NULL) Circuit2 = tp;
   else {
-    Printf ("Error: CreateLists() called more than twice without a reset.\n");
-    return;
+    Fprintf(stderr, "Error: CreateLists() called more than twice without a reset.\n");
+    return 0;
   }
 
   ConnectAllNodes(name, graph);
+
+  /* Parallel and serial combinations.  Run until networks of	*/
+  /* devices are resolved into a single device with the network	*/
+  /* represented by a number of property records.		*/
+
+  total = 0;
+  for (ppass = 0; ; ppass++) {
+     pcnt = CombineParallel(name, graph);
+     total += pcnt;
+     if (ppass > 0 && pcnt == 0) break;
+     for (spass = 0; ; spass++) {
+        scnt = CombineSerial(name, graph);
+        total += scnt;
+        if (scnt == 0) break;
+     }
+     if (spass == 0) break;
+  }
 
   E = CreateElementList(name, graph);
   N = CreateNodeList(name, graph);
@@ -1994,6 +2304,7 @@ void CreateLists(char *name, short graph)
   }
   Elements = E;
   Nodes = N;
+  return total;
 }
 
 #endif /* LOOKUP_INITIALIZATION */
@@ -2331,7 +2642,7 @@ int FractureNodeClass(struct NodeClass **Nlist)
 	  NewNumberOfNclasses++;
 
   if (Debug == TRUE) {
-    Fprintf(stdout, "Node classes = %4d (+%d)\n",
+    Fprintf(stdout, "Net groups = %4d (+%d)\n",
 	  NewNumberOfNclasses, NewNumberOfNclasses - OldNumberOfNclasses);
   }
 
@@ -2352,9 +2663,10 @@ typedef struct _chd {
 /* Callback function used by LookupClassEquivalent			*/
 /*----------------------------------------------------------------------*/
 
-struct nlist *lookupclass(struct hashlist *p, chdata *chd)
+struct nlist *lookupclass(struct hashlist *p, void *clientdata)
 {
     struct nlist *ptr;
+    chdata *chd = (chdata *)clientdata;
 
     ptr = (struct nlist *)(p->ptr);
 
@@ -2379,6 +2691,7 @@ struct nlist *LookupClassEquivalent(char *model, int file1, int file2)
    chdata chd;
 
    tp = LookupCellFile(model, file1);
+   if (tp == NULL) return NULL;
 
    chd.file = file2;
    chd.classhash = tp->classhash;
@@ -2397,7 +2710,7 @@ struct nlist *LookupClassEquivalent(char *model, int file1, int file2)
 struct nlist *LookupPrematchedClass(struct nlist *tc1, int file2)
 {
    struct Correspond *crec;
-   struct nlist *tc2;
+   struct nlist *tc2 = NULL;
 
    for (crec = ClassCorrespondence; crec != NULL; crec = crec->next) {
       if (crec->file1 == tc1->file) {
@@ -2432,19 +2745,32 @@ struct nlist *LookupPrematchedClass(struct nlist *tc1, int file2)
 }
 
 /*----------------------------------------------------------------------*/
-/* Attempt to define FirstElementPass that will generate element classes */
-/* by names of pins, which will allow elements with different cell names */
-/* in different circuits to be grouped.  Ultimately we want a solution	*/
-/* that allows classes to be forced to be equated.			*/
+/* Attempt to define FirstElementPass that will generate element	*/
+/* classes by names of pins, which will allow elements with different	*/
+/* cell names in different circuits to be grouped.  Ultimately we want	*/
+/* a solution that allows classes to be forced to be equated.		*/
+/*									*/
+/* During the pass, element lists are checked for subcircuits that have	*/
+/* no equivalent in the other circuit.  If so, they are marked for	*/
+/* flattening by setting the hashval entry to -1 and the routine	*/
+/* returns -1.  If every cell had at least one match, or all non-	*/
+/* matching cells were fundamental devices or black-box subcircuits,	*/
+/* then the setup for comparison continues, and the routine returns 0.	*/
+/* However, if "noflat" is set to 1, then the circuits are compared	*/
+/* as-is, even if one or more non-matching elements could be flattened.	*/
 /*----------------------------------------------------------------------*/
 
-void FirstElementPass(struct Element *E)
+int FirstElementPass(struct Element *E, int noflat, int dolist)
 {
   struct Element *Esrch, *Ecorr;
   struct NodeList *n;
   struct nlist *tp1, *tp2, *tp;
   int C1, C2, i;
   char ostr[89];
+  int needflat = 0;
+#ifdef TCL_NETGEN
+  Tcl_Obj *clist1, *clist2;
+#endif
 
   if (Debug == 0) {
      Fprintf(stdout, "\nSubcircuit summary:\n");
@@ -2461,81 +2787,156 @@ void FirstElementPass(struct Element *E)
      for (i = 0; i < 43; i++) *(ostr + i) = '-';
      for (i = 44; i < 87; i++) *(ostr + i) = '-';
      Fprintf(stdout, ostr);
+  }
 
-     // Print side-by-side comparison of elements based on class correspondence
-     // Use the hashval record to mark what entries have been processed already.
+#ifdef TCL_NETGEN
+  if (dolist) {
+     clist1 = Tcl_NewListObj(0, NULL);
+     clist2 = Tcl_NewListObj(0, NULL);
+  }
+#endif
 
-     for (Esrch = E; Esrch != NULL; Esrch = Esrch->next) {
-        if (Esrch->graph == Circuit1->file && Esrch->hashval == 0) {
-	   Esrch->hashval = 1;
-	   C1 = 1;
-	   C2 = 0;
-	   tp1 = LookupCellFile(Esrch->object->model, Circuit1->file);
-	   tp2 = LookupClassEquivalent(Esrch->object->model, Circuit1->file,
+  // Print side-by-side comparison of elements based on class correspondence
+  // Use the hashval record to mark what entries have been processed already.
+
+  for (Esrch = E; Esrch != NULL; Esrch = Esrch->next) {
+     if (Esrch->graph == Circuit1->file && Esrch->hashval == 0) {
+	Esrch->hashval = 1;
+	C1 = 1;
+	C2 = 0;
+	tp1 = LookupCellFile(Esrch->object->model.class, Circuit1->file);
+	tp2 = LookupClassEquivalent(Esrch->object->model.class, Circuit1->file,
 			Circuit2->file);
-	   for (Ecorr = E; Ecorr != NULL; Ecorr = Ecorr->next) {
-	      if (Ecorr->hashval == 0) {
-	         if (Ecorr->graph == Circuit2->file) {
-		    tp = LookupCellFile(Ecorr->object->model, Circuit2->file);
-		    if (tp == tp2) {
-		       Ecorr->hashval = 1;
-		       C2++;
-	            }
-	         }
-	         else if (Ecorr->graph == Circuit1->file) {
-		    tp = LookupCellFile(Ecorr->object->model, Circuit1->file);
-		    if (tp == tp1) {
-		       Ecorr->hashval = 1;
-		       C1++;
-		    }
+	for (Ecorr = E; Ecorr != NULL; Ecorr = Ecorr->next) {
+	   if (Ecorr->hashval == 0) {
+	      if (Ecorr->graph == Circuit2->file) {
+		 tp = LookupCellFile(Ecorr->object->model.class, Circuit2->file);
+		 // if (tp == tp2) {
+		 if (tp && tp2 && (tp->classhash == tp2->classhash)) {
+		    Ecorr->hashval = 1;
+		    C2++;
 	         }
 	      }
+	      else if (Ecorr->graph == Circuit1->file) {
+		 tp = LookupCellFile(Ecorr->object->model.class, Circuit1->file);
+		 // if (tp == tp1) {
+		 if (tp && tp1 && (tp->classhash == tp1->classhash)) {
+		    Ecorr->hashval = 1;
+		    C1++;
+		 }
+	      }
 	   }
+	}
+
+	if (C2 == 0)
+	    if (tp1->class == CLASS_SUBCKT)
+		if (!noflat) {
+		    Esrch->hashval = -1;	/* Mark for flattening */
+		    needflat = 1;
+		}
+
+	if (Debug == 0) {
+
 	   for (i = 0; i < 43; i++) *(ostr + i) = ' ';
 	   for (i = 44; i < 87; i++) *(ostr + i) = ' ';
-           snprintf(ostr, 43, "%s (%d)", Esrch->object->model, C1);
+           snprintf(ostr, 43, "%s (%d)", Esrch->object->model.class, C1);
 	   if (C2 > 0)
               snprintf(ostr + 44, 43, "%s (%d)%s", tp2->name, C2,
 			(C2 == C1) ? "" : " **Mismatch**");
-	   else
+	   else {
               snprintf(ostr + 44, 43, "(no matching element)");
-           for (i = 0; i < 88; i++) if (*(ostr + i) == '\0') *(ostr + i) = ' ';
-           Fprintf(stdout, ostr);
-        }
-     }
-     for (Esrch = E; Esrch != NULL; Esrch = Esrch->next) {
-        if (Esrch->graph == Circuit2->file && Esrch->hashval == 0) {
-	   Esrch->hashval = 1;
-	   C2 = 1;
-	   tp2 = LookupCellFile(Esrch->object->model, Circuit2->file);
-	   tp1 = LookupClassEquivalent(Esrch->object->model, Circuit2->file,
-			Circuit1->file);
-	   for (Ecorr = E; Ecorr != NULL; Ecorr = Ecorr->next) {
-	      if (Ecorr->hashval == 0) {
-	         if (Ecorr->graph == Circuit2->file) {
-		    tp = LookupCellFile(Ecorr->object->model, Circuit2->file);
-		    if (tp == tp2) {
-		       Ecorr->hashval = 1;
-		       C2++;
-	            }
-	         }
-	      }
 	   }
-	   for (i = 0; i < 43; i++) *(ostr + i) = ' ';
-	   for (i = 44; i < 87; i++) *(ostr + i) = ' ';
-           snprintf(ostr, 43, "(no matching element)");
-           snprintf(ostr + 44, 43, "%s (%d)", Esrch->object->model, C2);
            for (i = 0; i < 88; i++) if (*(ostr + i) == '\0') *(ostr + i) = ' ';
            Fprintf(stdout, ostr);
 	}
+#ifdef TCL_NETGEN
+	if (dolist) {
+	   Tcl_Obj *elist;
+	   elist = Tcl_NewListObj(0, NULL);
+	   Tcl_ListObjAppendElement(netgeninterp, elist,
+			Tcl_NewStringObj(Esrch->object->model.class, -1));
+	   Tcl_ListObjAppendElement(netgeninterp, elist,
+			Tcl_NewIntObj(C1));
+	   Tcl_ListObjAppendElement(netgeninterp, clist1, elist);
+
+	   elist = Tcl_NewListObj(0, NULL);
+	   if (C2 > 0) {
+	      Tcl_ListObjAppendElement(netgeninterp, elist,
+			Tcl_NewStringObj(tp2->name, -1));
+	      Tcl_ListObjAppendElement(netgeninterp, elist,
+			Tcl_NewIntObj(C2));
+	   }
+	   else {
+	      Tcl_ListObjAppendElement(netgeninterp, elist,
+			Tcl_NewStringObj("(no matching element)", -1));
+	      Tcl_ListObjAppendElement(netgeninterp, elist,
+			Tcl_NewIntObj(0));
+	   }
+	   Tcl_ListObjAppendElement(netgeninterp, clist2, elist);
+	}
+#endif
      }
   }
-  
+  for (Esrch = E; Esrch != NULL; Esrch = Esrch->next) {
+     if (Esrch->graph == Circuit2->file && Esrch->hashval == 0) {
+	Esrch->hashval = 1;
+	C2 = 1;
+	tp2 = LookupCellFile(Esrch->object->model.class, Circuit2->file);
+	tp1 = LookupClassEquivalent(Esrch->object->model.class, Circuit2->file,
+			Circuit1->file);
+	for (Ecorr = E; Ecorr != NULL; Ecorr = Ecorr->next) {
+	   if (Ecorr->hashval == 0) {
+	      if (Ecorr->graph == Circuit2->file) {
+		 tp = LookupCellFile(Ecorr->object->model.class, Circuit2->file);
+		 // if (tp == tp2) {
+		 if (tp->classhash == tp2->classhash) {
+		    Ecorr->hashval = 1;
+		    C2++;
+	         }
+	      }
+	   }
+	}
+
+	if (tp2->class == CLASS_SUBCKT)
+	    if (!noflat) {
+		Esrch->hashval = -1;	/* Mark for flattening */
+		needflat = 1;
+	    }
+
+	if (Debug == 0) {
+	   for (i = 0; i < 43; i++) *(ostr + i) = ' ';
+	   for (i = 44; i < 87; i++) *(ostr + i) = ' ';
+           snprintf(ostr, 43, "(no matching element)");
+           snprintf(ostr + 44, 43, "%s (%d)", Esrch->object->model.class, C2);
+           for (i = 0; i < 88; i++) if (*(ostr + i) == '\0') *(ostr + i) = ' ';
+           Fprintf(stdout, ostr);
+	}
+#ifdef TCL_NETGEN
+	if (dolist) {
+	   Tcl_Obj *elist;
+	   elist = Tcl_NewListObj(0, NULL);
+	   Tcl_ListObjAppendElement(netgeninterp, elist,
+			Tcl_NewStringObj("(no matching element)", -1));
+	   Tcl_ListObjAppendElement(netgeninterp, elist,
+			Tcl_NewIntObj(0));
+	   Tcl_ListObjAppendElement(netgeninterp, clist1, elist);
+
+	   elist = Tcl_NewListObj(0, NULL);
+	   Tcl_ListObjAppendElement(netgeninterp, elist,
+			Tcl_NewStringObj(Esrch->object->model.class, -1));
+	   Tcl_ListObjAppendElement(netgeninterp, elist,
+			Tcl_NewIntObj(C2));
+	   Tcl_ListObjAppendElement(netgeninterp, clist2, elist);
+	}
+#endif
+     }
+  }
+
   C1 = C2 = 0;
   while (E != NULL) {
 
     /* initialize random no. gen. to model-specific number */
-    tp = LookupCellFile(E->object->model, E->graph);
+    tp = LookupCellFile(E->object->model.class, E->graph);
     MagicSeed(tp->classhash);
 
     for (n = E->nodelist; n != NULL; n = n->next)
@@ -2548,21 +2949,40 @@ void FirstElementPass(struct Element *E)
   }
   if (Debug == TRUE) {
      if (C1 != C2)
-        Printf("Element Mismatch: Circuit 1 has %d, Circuit 2 has %d.\n",C1,C2);
+        Fprintf(stderr, "Device Mismatch: Circuit 1 has %d, Circuit 2 has %d.\n",
+			C1, C2);
   }
   else {
      for (i = 0; i < 43; i++) *(ostr + i) = ' ';
      for (i = 44; i < 87; i++) *(ostr + i) = ' ';
-     snprintf(ostr, 43, "Number of elements: %d%s", C1, (C1 == C2) ? "" :
+     snprintf(ostr, 43, "Number of devices: %d%s", C1, (C1 == C2) ? "" :
 		" **Mismatch**");
-     snprintf(ostr + 44, 43, "Number of elements: %d%s", C2, (C1 == C2) ? "" :
+     snprintf(ostr + 44, 43, "Number of devices: %d%s", C2, (C1 == C2) ? "" :
 		" **Mismatch**");
      for (i = 0; i < 88; i++) if (*(ostr + i) == '\0') *(ostr + i) = ' ';
      Fprintf(stdout, ostr);
   }
+
+#ifdef TCL_NETGEN
+  if (dolist) {
+     Tcl_Obj *mlist;
+
+     mlist = Tcl_NewListObj(0, NULL);
+     Tcl_ListObjAppendElement(netgeninterp, mlist, clist1);
+     Tcl_ListObjAppendElement(netgeninterp, mlist, clist2);
+
+     Tcl_SetVar2Ex(netgeninterp, "lvs_out", NULL,
+		Tcl_NewStringObj("devices", -1),
+		TCL_APPEND_VALUE | TCL_LIST_ELEMENT);
+     Tcl_SetVar2Ex(netgeninterp, "lvs_out", NULL, mlist,
+		TCL_APPEND_VALUE | TCL_LIST_ELEMENT);
+  }
+#endif
+
+  return 0;
 }
 
-void FirstNodePass(struct Node *N)
+void FirstNodePass(struct Node *N, int dolist)
 {
   struct ElementList *E;
   int fanout;
@@ -2579,7 +2999,7 @@ void FirstNodePass(struct Node *N)
   }
   if (Debug == TRUE) {
      if (C1 != C2)
-        Fprintf(stderr, "Node Mismatch: Circuit 1 has %d, Circuit 2 has %d.\n",C1,C2);
+        Fprintf(stderr, "Net Mismatch: Circuit 1 has %d, Circuit 2 has %d.\n",C1,C2);
   }
   else {
      char ostr[89];
@@ -2591,9 +3011,9 @@ void FirstNodePass(struct Node *N)
 
      for (i = 0; i < 43; i++) *(ostr + i) = ' ';
      for (i = 44; i < 87; i++) *(ostr + i) = ' ';
-     snprintf(ostr, 43, "Number of nodes: %d%s", C1, (C1 == C2) ? "" :
+     snprintf(ostr, 43, "Number of nets: %d%s", C1, (C1 == C2) ? "" :
 		" **Mismatch**");
-     snprintf(ostr + 44, 43, "Number of nodes: %d%s", C2, (C1 == C2) ? "" :
+     snprintf(ostr + 44, 43, "Number of nets: %d%s", C2, (C1 == C2) ? "" :
 		" **Mismatch**");
      for (i = 0; i < 88; i++) if (*(ostr + i) == '\0') *(ostr + i) = ' ';
      Fprintf(stdout, ostr);
@@ -2601,6 +3021,21 @@ void FirstNodePass(struct Node *N)
      for (i = 0; i < 87; i++) *(ostr + i) = '-';
      Fprintf(stdout, ostr);
   }
+
+#ifdef TCL_NETGEN
+  if (dolist) {
+     Tcl_Obj *nlist;
+
+     nlist = Tcl_NewListObj(0, NULL);
+     Tcl_ListObjAppendElement(netgeninterp, nlist, Tcl_NewIntObj(C1));
+     Tcl_ListObjAppendElement(netgeninterp, nlist, Tcl_NewIntObj(C2));
+     Tcl_SetVar2Ex(netgeninterp, "lvs_out", NULL,
+		Tcl_NewStringObj("nets", -1),
+		TCL_APPEND_VALUE | TCL_LIST_ELEMENT);
+     Tcl_SetVar2Ex(netgeninterp, "lvs_out", NULL, nlist,
+		TCL_APPEND_VALUE | TCL_LIST_ELEMENT);
+  }
+#endif
 }
 
 /*--------------------------------------------------------------*/
@@ -2616,8 +3051,14 @@ void MatchFail(char *name1, char *name2)
    tc1 = LookupCell(name1);
    tc2 = LookupCell(name2);
 
-   tc1->flags &= ~CELL_MATCHED;
-   tc2->flags &= ~CELL_MATCHED;
+   if (!(tc1->flags & CELL_DUPLICATE) && !(tc2->flags & CELL_DUPLICATE)) {
+      tc1->flags &= ~CELL_MATCHED;
+      tc2->flags &= ~CELL_MATCHED;
+   }
+   else if (tc1->flags & CELL_DUPLICATE)
+      tc1->flags &= ~CELL_MATCHED;
+   else if (tc2->flags & CELL_DUPLICATE)
+      tc2->flags &= ~CELL_MATCHED;
 }
 
 /*--------------------------------------------------------------*/
@@ -2626,26 +3067,28 @@ int FlattenUnmatched(struct nlist *tc, char *parent, int stoplevel, int loclevel
 {
    struct nlist *tcsub;
    struct objlist *ob;
-   int changed = 1;
+   int changed = 0;
 
    if (loclevel == stoplevel && !(tc->flags & CELL_MATCHED)) {
       ClearDumpedList();
       if (Debug == TRUE) Fprintf(stdout, "Level %d ", loclevel);
-      Fprintf(stdout, "Flattening unmatched subcell %s in circuit %s\n",
-				tc->name, parent);
-      flattenInstancesOf(parent, tc->file, tc->name);
+      Fprintf(stdout, "Flattening unmatched subcell %s in circuit %s (%d)",
+				tc->name, parent, tc->file);
+      changed = flattenInstancesOf(parent, tc->file, tc->name);
+      Fprintf(stdout, "(%d instance%s)\n", changed, ((changed == 1) ? "" : "s"));
       return 1;
    }
 
    if (tc->cell == NULL) return 0;
 
+   changed = 1;
    while (changed) {
+      changed = 0;
       for (ob = tc->cell; ob != NULL; ob = ob->next) {
-	 changed = 0;
          tcsub = NULL;
          if (ob->type == FIRSTPIN) {
 	    /* First check if there is a class equivalent */
-	    tcsub = LookupCellFile(ob->model, tc->file);
+	    tcsub = LookupCellFile(ob->model.class, tc->file);
 	    if (!tcsub || (tcsub->class != CLASS_SUBCKT)) continue;
 	    else if (tcsub == tc) continue;
 	    if (FlattenUnmatched(tcsub, tc->name, stoplevel, loclevel + 1)) {
@@ -2672,7 +3115,7 @@ void DescendCountQueue(struct nlist *tc, int *level, int loclevel)
       tcsub = NULL;
       if (ob->type == FIRSTPIN) {
 	 /* First check if there is a class equivalent */
-	 tcsub = LookupCellFile(ob->model, tc->file);
+	 tcsub = LookupCellFile(ob->model.class, tc->file);
 	 if (!tcsub || (tcsub->class != CLASS_SUBCKT)) continue;
 	 else if (tcsub == tc) continue;
 	 DescendCountQueue(tcsub, level, loclevel + 1);
@@ -2685,21 +3128,45 @@ void DescendCountQueue(struct nlist *tc, int *level, int loclevel)
 void DescendCompareQueue(struct nlist *tc, struct nlist *tctop, int stoplevel,
 		int loclevel, int flip)
 {
-   struct nlist *tcsub, *tc2;
+   struct nlist *tcsub, *tc2, *tctest;
    struct objlist *ob;
    struct Correspond *scomp, *newcomp;
+   char *sdup = NULL;
 
    if (loclevel == stoplevel && !(tc->flags & CELL_MATCHED)) {
+
+      // Any duplicate cell should be name-matched against a non-duplicate
+      if (tc->flags & CELL_DUPLICATE) {
+	 sdup = strstr(tc->name, "[[");
+	 if (sdup) *sdup = '\0';
+      }
 
       // Find exact-name equivalents or cells that have been specified
       // as equivalent using the "equate class" command.
 
-      tc2 = LookupClassEquivalent(tc->name, tc->file, tctop->file);
+      // Check if cell names were forced to be matched using the
+      // "equate classes" command.  This takes precedence over any
+      // name matching.
+
+      tc2 = LookupPrematchedClass(tc, tctop->file);
       if (tc2 == NULL) {
-	 // Check if cell names were forced to be matched using the
-	 // "equate classes" command.
-	 tc2 = LookupPrematchedClass(tc, tctop->file);
+	 tc2 = LookupClassEquivalent(tc->name, tc->file, tctop->file);
+
+	 // If there is a name equivalent, then make sure that
+	 // the matching entry does not exist in the prematched
+	 // class list with a match to something else.
+
+         if (tc2 != NULL) {
+	    tctest = LookupPrematchedClass(tc2, tc->file);
+	    if (tctest != NULL && tctest != tc) {
+	       if (sdup) *sdup = '[';
+	       return;
+	    }
+         }
       }
+
+      if (sdup) *sdup = '[';
+
       if (tc2 != NULL) {
 	 newcomp = (struct Correspond *)CALLOC(1, sizeof(struct Correspond));
 	 newcomp->next = NULL;
@@ -2741,12 +3208,29 @@ void DescendCompareQueue(struct nlist *tc, struct nlist *tctop, int stoplevel,
    for (ob = tc->cell; ob != NULL; ob = ob->next) {
       tcsub = NULL;
       if (ob->type == FIRSTPIN) {
-	 tcsub = LookupCellFile(ob->model, tc->file);
+	 tcsub = LookupCellFile(ob->model.class, tc->file);
 	 if (!tcsub || (tcsub->class != CLASS_SUBCKT)) continue;
 	 else if (tcsub == tc) continue;
 	 DescendCompareQueue(tcsub, tctop, stoplevel, loclevel + 1, flip);
       }
    }
+}
+
+/*--------------------------------------------------------------*/
+/* Routine that assigns Circuit1 and Circuit2.  This will be 	*/
+/* done by CreateLists, but doing it earlier allows one to use	*/
+/* the names "-circuit1" and "-circuit2" in the setup file.	*/
+/*--------------------------------------------------------------*/
+
+void AssignCircuits(char *name1, int file1, char *name2, int file2)
+{
+   struct nlist *tc1, *tc2;
+
+   tc1 = LookupCellFile(name1, file1);
+   tc2 = LookupCellFile(name2, file2);
+
+   if (tc1 != NULL) Circuit1 = tc1;
+   if (tc2 != NULL) Circuit2 = tc2;
 }
 
 /*--------------------------------------------------------------*/
@@ -2883,120 +3367,149 @@ void RemoveCompareQueue()
 /* create an initial data structure */
 /*----------------------------------*/
 
-void CreateTwoLists(char *name1, int file1, char *name2, int file2)
+void CreateTwoLists(char *name1, int file1, char *name2, int file2, int dolist)
 {
-  struct Element *El1;
-  struct Node *N1;
-  struct nlist *tc1, *tc2;
+    struct Element *El1;
+    struct Node *N1;
+    struct nlist *tc1, *tc2, *tcf;
+    int modified;
 
-  ResetState();
+    ResetState();
 
-  /* print preliminary statistics */
-  Printf("Contents of circuit 1:  ");
-  DescribeInstance(name1, file1);
-  Printf("Contents of circuit 2:  ");
-  DescribeInstance(name2, file2);
-  Printf("\n");
+    /* print preliminary statistics */
+    Printf("Contents of circuit 1:  ");
+    DescribeInstance(name1, file1);
+    Printf("Contents of circuit 2:  ");
+    DescribeInstance(name2, file2);
+    Printf("\n");
 
-  if (file1 == -1)
-     tc1 = LookupCell(name1);
-  else
-     tc1 = LookupCellFile(name1, file1);
+    if (file1 == -1)
+        tc1 = LookupCell(name1);
+    else
+        tc1 = LookupCellFile(name1, file1);
 
-  if (file2 == -1)
-     tc2 = LookupCell(name2);
-  else
-     tc2 = LookupCellFile(name2, file2);
+    if (file2 == -1)
+        tc2 = LookupCell(name2);
+    else
+        tc2 = LookupCellFile(name2, file2);
 
-  /* determine if matching will be case sensitive or case insensitive */
-  matchfunc = match;
-  matchintfunc = matchfile;
-  hashfunc = hash;
-  if (tc1 != NULL && tc2 != NULL) {
-     if ((tc1->flags & CELL_NOCASE) && (tc2->flags & CELL_NOCASE)) {
-	matchfunc = matchnocase;
-	matchintfunc = matchfilenocase;
-	hashfunc = hashnocase;
-     }
-  }
+    /* determine if matching will be case sensitive or case insensitive */
+    matchfunc = match;
+    matchintfunc = matchfile;
+    hashfunc = hash;
+    if (tc1 != NULL && tc2 != NULL) {
+        if ((tc1->flags & CELL_NOCASE) && (tc2->flags & CELL_NOCASE)) {
+	   matchfunc = matchnocase;
+	   matchintfunc = matchfilenocase;
+	   hashfunc = hashnocase;
+        }
+    }
 
-  CreateLists(name1, file1);
-  if (Elements == NULL) {
-    Printf("Cell %s contains no elements.\n", name1);
-    return;
-  }
-  if (Nodes == NULL) {
-    Printf("Cell %s contains no nodes.\n", name1);
-    return;
-  }
+    modified = CreateLists(name1, file1);
+    if (Elements == NULL) {
+       Printf("Circuit %s contains no devices.\n", name1);
+       return;
+    }
+    if (Nodes == NULL) {
+       Printf("Circuit %s contains no nets.\n", name1);
+       return;
+    }
 
-  ElementClasses = GetElementClass();
-  if (ElementClasses == NULL) {
-    Fprintf(stderr,"Memory allocation error\n");
+    ElementClasses = GetElementClass();
+    if (ElementClasses == NULL) {
+       Fprintf(stderr, "Memory allocation error\n");
 #ifdef DEBUG_ALLOC
-    PrintCoreStats();
+       PrintCoreStats();
 #endif
-    ResetState();
-    return;
-  }
-  ElementClasses->elements = Elements;
-  Magic(ElementClasses->magic);
+       ResetState();
+       return;
+    }
+    ElementClasses->elements = Elements;
+    Magic(ElementClasses->magic);
 
-  for (El1 = Elements; El1->next != NULL; El1 = El1->next) {
-    El1->elemclass = ElementClasses;
-  }
-  /* El1 now points to last element of list */
+    for (El1 = Elements; El1->next != NULL; El1 = El1->next) {
+       El1->elemclass = ElementClasses;
+    }
+    /* El1 now points to last element of list */
 
-  NodeClasses = GetNodeClass();
-  if (NodeClasses == NULL) {
-    Fprintf(stderr,"Memory allocation error\n");
+    NodeClasses = GetNodeClass();
+    if (NodeClasses == NULL) {
+       Fprintf(stderr,"Memory allocation error\n");
 #ifdef DEBUG_ALLOC
-    PrintCoreStats();
+       PrintCoreStats();
 #endif
-    ResetState();
-    return;
-  }
-  NodeClasses->nodes = Nodes;
-  Magic(NodeClasses->magic);
+       ResetState();
+       return;
+    }
+    NodeClasses->nodes = Nodes;
+    Magic(NodeClasses->magic);
 
-  for (N1 = Nodes; N1->next != NULL; N1 = N1->next) {
-    N1->nodeclass = NodeClasses;
-  }
-  /* N1 now points to last element of list */
+    for (N1 = Nodes; N1->next != NULL; N1 = N1->next) {
+       N1->nodeclass = NodeClasses;
+    }
+    /* N1 now points to last element of list */
 
 
-  CreateLists(name2, file2);
-  if (Elements == NULL) {
-    Printf("Cell %s contains no elements.\n", name2);
-    ResetState();
-    return;
-  }
+    modified += CreateLists(name2, file2);
+    if (Elements == NULL) {
+       Printf("Circuit %s contains no devices.\n", name2);
+       ResetState();
+       return;
+    }
 
-  if (Nodes == NULL) {
-    Printf("Cell %s contains no nodes.\n", name2);
-    ResetState();
-    return;
-  }
+    if (Nodes == NULL) {
+       Printf("Circuit %s contains no nets.\n", name2);
+       ResetState();
+       return;
+    }
 
-  /* splice new lists into existing lists */
-  El1->next = Elements;
-  for (El1 = Elements; El1->next != NULL; El1 = El1->next) {
-    El1->elemclass = ElementClasses;
-  }
+    if (modified > 0) {
+       Printf("Circuit was modified by parallel/serial device merging.\n");
+       Printf("New circuit summary:\n\n");
+       /* print preliminary statistics */
+       Printf("Contents of circuit 1:  ");
+       DescribeInstance(name1, file1);
+       Printf("Contents of circuit 2:  ");
+       DescribeInstance(name2, file2);
+       Printf("\n");
+    }
 
-  N1->next = Nodes;
-  for (N1 = Nodes; N1->next != NULL; N1 = N1->next) {
-    N1->nodeclass = NodeClasses;
-  }
+    /* splice new lists into existing lists */
+    El1->next = Elements;
+    for (El1 = Elements; El1->next != NULL; El1 = El1->next) {
+       El1->elemclass = ElementClasses;
+    }
 
-  /* print preliminary statistics */
-  SummarizeDataStructures();
+    N1->next = Nodes;
+    for (N1 = Nodes; N1->next != NULL; N1 = N1->next) {
+       N1->nodeclass = NodeClasses;
+    }
+
+    /* print preliminary statistics */
+    SummarizeDataStructures();
   
-  /* perform first set of fractures */
-  FirstElementPass(ElementClasses->elements);
-  FirstNodePass(NodeClasses->nodes);
-  FractureElementClass(&ElementClasses);
-  FractureNodeClass(&NodeClasses);
+#ifdef TCL_NETGEN
+    if (dolist) {
+       Tcl_Obj *nlist;
+
+       nlist = Tcl_NewListObj(0, NULL);
+       Tcl_ListObjAppendElement(netgeninterp, nlist, Tcl_NewStringObj(name1, -1));
+       Tcl_ListObjAppendElement(netgeninterp, nlist, Tcl_NewStringObj(name2, -1));
+
+       Tcl_SetVar2Ex(netgeninterp, "lvs_out", NULL,
+		Tcl_NewStringObj("name", -1),
+		TCL_APPEND_VALUE | TCL_LIST_ELEMENT);
+       Tcl_SetVar2Ex(netgeninterp, "lvs_out", NULL, nlist,
+		TCL_APPEND_VALUE | TCL_LIST_ELEMENT);
+    }
+#endif
+
+    /* perform first set of fractures */
+    FirstElementPass(ElementClasses->elements, FALSE, dolist);
+
+    FirstNodePass(NodeClasses->nodes, dolist);
+    FractureElementClass(&ElementClasses);
+    FractureNodeClass(&NodeClasses);
 }
 
 void RegroupDataStructures(void)
@@ -3008,7 +3521,7 @@ void RegroupDataStructures(void)
   
 
   if (ElementClasses == NULL || NodeClasses == NULL) {
-    Printf( "Need to initialize data structures first!\n");
+    Fprintf(stderr, "Need to initialize data structures first!\n");
     return;
   }
 
@@ -3075,8 +3588,8 @@ void RegroupDataStructures(void)
   Iterations = 0;
 
   /* perform first set of fractures */
-  FirstElementPass(ElementClasses->elements);
-  FirstNodePass(NodeClasses->nodes);
+  FirstElementPass(ElementClasses->elements, TRUE, 0);
+  FirstNodePass(NodeClasses->nodes, 0);
   FractureElementClass(&ElementClasses);
   FractureNodeClass(&NodeClasses);
 }
@@ -3121,7 +3634,7 @@ int Iterate(void)
   struct NodeClass *NC;
 
   if (ElementClasses == NULL || NodeClasses == NULL) {
-    Printf( "Need to initialize data structures first!\n");
+    Fprintf(stderr, "Need to initialize data structures first!\n");
     return(1);
   }
 
@@ -3171,15 +3684,1618 @@ int Iterate(void)
 }
 
 /*--------------------------------------------------------------*/
-/* Print results of property checks				*/
+/* Combine properties of ob1 starting at property idx1 up to	*/
+/* property (idx1 + run1), where devices match critical serial	*/
+/* values and can be combined by summing over the "S" record.	*/
 /*--------------------------------------------------------------*/
 
-void PrintPropertyResults(void)
+int serial_optimize(struct objlist *ob1, struct nlist *tp1, int idx1, int run1)
 {
-  struct ElementClass *EC;
+   struct objlist *obn;
+   int i;
 
-  for (EC = ElementClasses; EC != NULL; EC = EC->next)
-    PropertyCheck(EC, 1);
+   obn = ob1;
+   for (i = 0; i < idx1; i++) obn = obn->next;
+   return PropertyOptimize(obn, tp1, run1, TRUE);
+}
+
+/*--------------------------------------------------------------*/
+/* Combine properties of ob1 starting at property idx1 up to	*/
+/* property (idx1 + run1) to match the properties of ob2 at	*/
+/* idx2 to (idx2 + run2).  run1 is always larger than run2.	*/
+/*--------------------------------------------------------------*/
+
+int serial_combine(struct objlist *ob1, struct nlist *tp1, int idx1, int run1,
+	struct objlist *ob2, struct nlist *tp2, int idx2, int run2)
+{
+   struct objlist *obn, *obp;
+   int i, j;
+   int changed = 0;
+
+   obn = ob1;
+   for (i = 0; i < idx1; i++) obn = obn->next;
+   obp = ob2;
+   for (i = 0; i < idx2; i++) obp = obp->next;
+   
+   // for (j = 0; j < run2; j++) {
+   //    for (i = 0; i < run1; i++) {
+   //    }
+   // }
+
+   return changed;
+}
+
+typedef struct _propsort {
+    double value;
+    int idx;
+    struct objlist *ob;
+} propsort;
+
+/*--------------------------------------------------------------*/
+/* Property sorting routine used by qsort()			*/
+/*--------------------------------------------------------------*/
+
+static int compsort(const void *p1, const void *p2)
+{
+    propsort *s1, *s2;
+
+    s1 = (propsort *)p1;
+    s2 = (propsort *)p2;
+
+    return (s1->value > s2->value) ? 1 : 0;
+}
+
+/*--------------------------------------------------------------*/
+/* Sort properties of ob1 starting at property idx1 up to	*/
+/* property (idx1 + run).  Use serial critical property for	*/
+/* sorting.  Multiply critical property by S before sort.	*/
+/* ob1 is the record before the first property.			*/
+/*--------------------------------------------------------------*/
+
+void serial_sort(struct objlist *ob1, struct nlist *tp1, int idx1, int run)
+{
+   struct objlist *obn, *obp;
+   propsort *proplist;
+   struct property *kl;
+   struct valuelist *vl;
+   int i, p, sval;
+   double cval;
+
+   obn = ob1->next;
+   for (i = 0; i < idx1; i++) obn = obn->next;
+
+   // Create a structure of length (run) to hold critical property
+   // value and index.  Then sort that list, then use the sorted
+   // indexes to sort the actual property linked list.
+
+   proplist = (propsort *)MALLOC(run * sizeof(propsort));
+
+   obp = obn;
+   sval = 1;
+   cval = 0.0;
+   for (i = 0; i < run; i++) {
+      for (p = 0;; p++) {
+	 vl = &(obp->instance.props[p]);
+	 if (vl->type == PROP_ENDLIST) break;
+	 if (vl->key == NULL) continue;
+         if (!strcmp(vl->key, "S"))
+	    sval = vl->value.ival;
+	 else {
+	    kl = (struct property *)HashLookup(vl->key, &(tp1->propdict));
+	    if (kl && (kl->merge == MERGE_SER_CRIT))
+		if (vl->type == PROP_INTEGER)
+		   cval = (double)vl->value.ival;
+		else
+		   cval = vl->value.dval;
+	 }
+      }
+      proplist[i].value = (double)sval * cval;
+      proplist[i].idx = i;
+      proplist[i].ob = obp;
+      obp = obp->next;
+   }
+   obn = obp;	/* Link from last property */
+
+   qsort(&proplist[0], run, sizeof(propsort), compsort);
+
+   // Re-sort list
+   obp = ob1;
+   for (i = 0; i < run; i++) {
+      obp->next = proplist[i].ob;
+      obp = obp->next;
+   }
+   obp->next = obn;	/* Restore last link */
+
+   FREE(proplist);
+}
+
+/*--------------------------------------------------------------*/
+/* Combine properties of ob1 starting at property idx1 up to	*/
+/* property (idx1 + run1), where devices match critical 	*/
+/* parallel values and can be combined by summing over the "M"	*/
+/* record.							*/
+/*--------------------------------------------------------------*/
+
+int parallel_optimize(struct objlist *ob1, struct nlist *tp1, int idx1, int run1)
+{
+   struct objlist *obn;
+   int i;
+
+   obn = ob1;
+   for (i = 0; i < idx1; i++) obn = obn->next;
+   return PropertyOptimize(obn, tp1, run1, FALSE);
+}
+
+/*--------------------------------------------------------------*/
+/* Combine properties of ob1 starting at property idx1 up to	*/
+/* property (idx1 + run1) to match the properties of ob2 at	*/
+/* idx2 to (idx2 + run2).  run1 is always larger than run2.	*/
+/*--------------------------------------------------------------*/
+
+int parallel_combine(struct objlist *ob1, struct nlist *tp1, int idx1, int run1,
+	struct objlist *ob2, struct nlist *tp2, int idx2, int run2)
+{
+   struct objlist *obn, *obp;
+   int i, j;
+   int changed = 0;
+
+   obn = ob1;
+   for (i = 0; i < idx1; i++) obn = obn->next;
+   obp = ob2;
+   for (i = 0; i < idx2; i++) obp = obp->next;
+
+   // for (j = 0; j < run2; j++) {
+   //    for (i = 0; i < run1; i++) {
+   //    }
+   // }
+
+   return changed;
+}
+
+/*--------------------------------------------------------------*/
+/* Sort properties of ob1 starting at property idx1 up to	*/
+/* property (idx1 + run).  Use parallel critical property for	*/
+/* sorting.  Multiply critical property by M before sort.	*/
+/* ob1 is the record before the first property.			*/
+/*--------------------------------------------------------------*/
+
+void parallel_sort(struct objlist *ob1, struct nlist *tp1, int idx1, int run)
+{
+   struct objlist *obn, *obp;
+   propsort *proplist;
+   struct property *kl;
+   struct valuelist *vl;
+   int i, p, sval;
+   double cval;
+
+   obn = ob1->next;
+   for (i = 0; i < idx1; i++) obn = obn->next;
+
+   // Create a structure of length (run) to hold critical property
+   // value and index.  Then sort that list, then use the sorted
+   // indexes to sort the actual property linked list.
+
+   proplist = (propsort *)MALLOC(run * sizeof(propsort));
+
+   obp = obn;
+   sval = 1;
+   cval = 0.0;
+   for (i = 0; i < run; i++) {
+      for (p = 0;; p++) {
+	 vl = &(obp->instance.props[p]);
+	 if (vl->type == PROP_ENDLIST) break;
+	 if (vl->key == NULL) continue;
+         if (!strcmp(vl->key, "S"))
+	    sval = vl->value.ival;
+         kl = (struct property *)HashLookup(vl->key, &(tp1->propdict));
+	 if (kl == NULL) continue;		/* Ignored property */
+         if (kl->merge == MERGE_ADD_CRIT)
+	    if (vl->type == PROP_INTEGER)
+	        cval = (double)vl->value.ival;
+	    else
+	        cval = vl->value.dval;
+      }
+      proplist[i].value = (double)sval * cval;
+      proplist[i].idx = i;
+      proplist[i].ob = obp;
+      obp = obp->next;
+   }
+   obn = obp;	/* Link from last property */
+
+   qsort(&proplist[0], run, sizeof(propsort), compsort);
+
+   // Re-sort list
+   obp = ob1;
+   for (i = 0; i < run; i++) {
+      obp->next = proplist[i].ob;
+      obp = obp->next;
+   }
+   obp->next = obn;	/* Restore last link */
+
+   FREE(proplist);
+}
+
+/*--------------------------------------------------------------*/
+/* Attempt to match two property lists representing serial/	*/
+/* parallel combinations of devices.  Where the number of 	*/
+/* devices is not equal, try to reduce the one with more	*/
+/* devices to match.  If there are the same number of parallel	*/
+/* or serial devices, check if they match better by swapping.	*/
+/* The goal is to get two property lists that can be checked by	*/
+/* 1-to-1 matching in PropertyMatch().				*/
+/*--------------------------------------------------------------*/
+
+void PropertySortAndCombine(struct objlist *pre1, struct nlist *tp1,
+		struct objlist *pre2, struct nlist *tp2)
+{
+   struct objlist *obn, *obp;
+   struct objlist *ob1, *ob2;
+
+   int p, n;
+   int run, cnt, idx1, idx2, max1, max2;
+   int icount1, icount2, changed;
+   char *netwk1, *netwk2;
+   char *c1, *c2;
+   struct valuelist *vl;
+   int iterations = 0;
+
+   ob1 = pre1->next;
+   ob2 = pre2->next;
+
+   changed = 1;
+   while (changed) {
+      iterations++;
+      changed = 0;
+
+      // How many property records are there?
+      // If there is only one property record in each instance then
+      // there is nothing to be sorted.
+      icount1 = 0;
+      for (obn = ob1; obn && obn->type == PROPERTY; obn = obn->next) icount1++;
+      icount2 = 0;
+      for (obn = ob2; obn && obn->type == PROPERTY; obn = obn->next) icount2++;
+      if (icount1 < 2 && icount2 < 2) {
+	 /* Printf("Networks have been reduced to 1 device each; "
+			"optimization done.\n"); */
+	 return;
+      }
+
+      // Construct a string of characters representing the networks
+      // of the two devices.  First determine the size of each, then
+      // allocate and fill.
+
+      n = 1;
+      for (obn = ob1; obn && obn->type == PROPERTY; obn = obn->next) {
+         n++;
+         for (p = 0;; p++) {
+	    vl = &(obn->instance.props[p]);
+	    if (vl->type == PROP_ENDLIST) break;
+	    if (vl->key == NULL) continue;
+            if (!strcmp(vl->key, "_tag")) n += strlen(vl->value.string);
+         }
+      }
+      netwk1 = (char *)MALLOC(n);
+      netwk1[0] = '\0';
+      for (obn = ob1; obn && obn->type == PROPERTY; obn = obn->next) {
+         for (p = 0;; p++) {
+	    vl = &(obn->instance.props[p]);
+	    if (vl->type == PROP_ENDLIST) break;
+	    if (vl->key == NULL) continue;
+            if (!strcmp(vl->key, "_tag")) strcat(netwk1, vl->value.string);
+         }
+         strcat(netwk1, "D");
+      }
+      n = 1;
+      for (obn = ob2; obn && obn->type == PROPERTY; obn = obn->next) {
+         n++;
+         for (p = 0;; p++) {
+	    vl = &(obn->instance.props[p]);
+	    if (vl->type == PROP_ENDLIST) break;
+	    if (vl->key == NULL) continue;
+            if (!strcmp(vl->key, "_tag")) n += strlen(vl->value.string);
+         }
+      }
+      netwk2 = (char *)MALLOC(n);
+      netwk2[0] = '\0';
+      for (obn = ob2; obn && obn->type == PROPERTY; obn = obn->next) {
+         for (p = 0;; p++) {
+	    vl = &(obn->instance.props[p]);
+	    if (vl->type == PROP_ENDLIST) break;
+	    if (vl->key == NULL) continue;
+            if (!strcmp(vl->key, "_tag")) strcat(netwk2, vl->value.string);
+         }
+         strcat(netwk2, "D");
+      }
+
+      // Printf("Diagnostic: network1 is \"%s\"  "
+      //		"network2 is \"%s\"\n", netwk1, netwk2);
+
+      /* Method to resolve any network to the largest solution that	   */
+      /* matches both sides.  Use the netwk1, netwk2 strings to determine  */
+      /* and manage the topology.  Note that at this point devices have	   */
+      /* already been combined if all critical properties match, so any	   */
+      /* parallel devices remaining are not considered mergeable unless as */
+      /* a last resort.  Parallel devices need to be checked for swapping, */
+      /* however.  So the steps are:					   */
+      /* 1) Find parallel devices with more elements in one circuit than   */
+      /*    in the other.  If non-summing parameters of interest match,	   */
+      /*    then merge all devices that can be merged until both sides	   */
+      /*    have the same number of devices.				   */
+      /* 2) Find serial devices that have more elements in one circuit	   */
+      /*    than in the other.  If non-summing parameters of interest	   */
+      /*    match, then merge all devices that can be merged until	   */
+      /*    both sides have the same number of devices.			   */
+      /* 3) Find parallel devices that have the same number in both 	   */
+      /*    circuits.  Check if critical parameters match between the 	   */
+      /*    circuits.  If not, check if swapping devices in circuit1	   */
+      /*    makes a better match to circuit2.			  	   */
+
+      /* Case 1:  Parallel devices with more elements in one circuit	*/
+
+      /* Find the largest group of parallel devices in circuit1 */
+      run = 0;
+      cnt = 0;
+      idx1 = 0;
+      max1 = 0;
+      for (c1 = netwk1; ; c1++) {
+         if (*c1 == 'D') {
+	    run++;
+	    cnt++;
+         }
+         else {
+            if (run > max1) {
+               max1 = run;
+	       idx1 = cnt - run;
+            }
+            run = 0;
+         }
+         if (*c1 == '\0') break;
+      }
+
+      /* Find the largest group of parallel devices in circuit2 */
+      run = 0;
+      cnt = 0;
+      idx2 = 0;
+      max2 = 0;
+      for (c2 = netwk2; ; c2++) {
+         if (*c2 == 'D') {
+	    cnt++;
+ 	    run++;
+         }
+         else {
+            if (run > max2) {
+               max2 = run;
+	       idx2 = cnt - run;
+            }
+            run = 0;
+         }
+         if (*c2 == '\0') break;
+      }
+
+      // if (max1 != max2)
+      //    Printf("Circuit 1 has %d devices in parallel while circuit 2 has %d\n",
+      //		(max1 == 1) ? 0 : max1, (max2 == 1) ? 0 : max2);
+
+      if (max1 > 1) changed += parallel_optimize(ob1, tp1, idx1, max1);
+      if (max2 > 1) changed += parallel_optimize(ob2, tp2, idx2, max2);
+
+      if (changed > 0) {
+         FREE(netwk1);
+         FREE(netwk2);
+         continue;
+      }
+
+      if (max1 > 1) {
+	 parallel_sort(pre1, tp1, idx1, max1);
+         /* Re-link first property, because it may have been moved */
+         ob1 = pre1->next;
+      }
+      if (max2 > 1) {
+	 parallel_sort(pre2, tp2, idx2, max2);
+         /* Re-link first property, because it may have been moved */
+	 ob2 = pre2->next;
+      }
+
+      /* Do not run parallel_combine until all other changes have been resolved */
+      if (changed == 0) {
+         if (max2 > max1)
+            changed += parallel_combine(ob2, tp2, idx2, max2, ob1, tp1, idx1, max1);
+         else if (max1 > max2)
+            changed += parallel_combine(ob1, tp1, idx1, max1, ob2, tp2, idx2, max2);
+
+         if (changed > 0) {
+            FREE(netwk1);
+            FREE(netwk2);
+            continue;
+         }
+      }
+
+      /* Case 2:  Serial devices with more elements in one circuit */
+
+      /* Find the largest group of serial devices in circuit1 */
+      run = 0;
+      cnt = 0;
+      idx1 = 0;
+      max1 = 0;
+      for (c1 = netwk1; ; c1++) {
+         if (*c1 == 'D') {
+            if (run == 0) run++;
+	    cnt++;
+	    if (*(c1 + 1) == '+' && *(c1 + 2) == 'D') {
+	       run++;
+               c1++;
+	    }
+         }
+         else {
+            if (run > max1) {
+               max1 = run;
+	       idx1 = cnt - run;
+            }
+            run = 0;
+         }
+         if (*c1 == '\0') break;
+      }
+
+      /* Find the largest group of serial devices in circuit2 */
+      run = 0;
+      cnt = 0;
+      idx2 = 0;
+      max2 = 0;
+      for (c2 = netwk2; ; c2++) {
+         if (*c2 == 'D') {
+            if (run == 0) run++;
+	    cnt++;
+	    if (*(c2 + 1) == '+' && *(c2 + 2) == 'D') {
+	       run++;
+               c2++;
+	    }
+         }
+         else {
+            if (run > max2) {
+               max2 = run;
+	       idx2 = cnt - run;
+            }
+            run = 0;
+         }
+         if (*c2 == '\0') break;
+      }
+
+      // if (max1 != max2)
+      //    Printf("Circuit 1 has %d devices in series while circuit 2 has %d\n",
+      //		(max1 == 1) ? 0 : max1, (max2 == 1) ? 0 : max2);
+
+      if (max1 > 1) changed += serial_optimize(ob1, tp1, idx1, max1);
+      if (max2 > 1) changed += serial_optimize(ob2, tp2, idx2, max2);
+
+      if (changed > 0) {
+         FREE(netwk1);
+         FREE(netwk2);
+         continue;
+      }
+
+      if (max1 > 1) {
+         /* Re-link first property, because it may have been moved */
+	 serial_sort(pre1, tp1, idx1, max1);
+         ob1 = pre1->next;
+      }
+      if (max2 > 1) {
+         /* Re-link first property, because it may have been moved */
+         serial_sort(pre2, tp2, idx2, max2);
+         ob2 = pre2->next;
+      }
+
+      /* Do not run serial_combine until all other changes have been resolved */
+      if (changed == 0) {
+         if (max2 > max1)
+            changed += serial_combine(ob2, tp2, idx2, max2, ob1, tp1, idx1, max1);
+         else if (max1 > max2)
+            changed += serial_combine(ob1, tp1, idx1, max1, ob2, tp2, idx2, max2);
+      }
+
+      FREE(netwk1);
+      FREE(netwk2);
+
+      /* Continue looping until there are no further changes to be made */
+   }
+   if (iterations > 1)
+      Printf("No more changes can be made to serial/parallel networks.\n");
+}
+
+/*--------------------------------------------------------------*/
+/* "ob" points to the first property record of an object	*/
+/* instance.  Check if there are multiple property records.  If	*/
+/* so, group them by same properties of interest, order them by	*/
+/* critical property (if defined), and merge devices with the	*/
+/* same properties (by summing property "M" for devices)	*/
+/*								*/
+/* For final optimization, if run == 1 and M > 1, then merge	*/
+/* the critical property over M and set M to 1.			*/
+/*								*/
+/* Return the number of devices modified.			*/
+/*--------------------------------------------------------------*/
+
+typedef struct _proplink *proplinkptr;
+typedef struct _proplink {
+   struct property *prop;
+   proplinkptr next;
+} proplink;
+
+int PropertyOptimize(struct objlist *ob, struct nlist *tp, int run, int serial)
+{
+   struct objlist *ob2, *obt;
+   struct property *kl, *m_rec, **plist;
+   struct valuelist ***vlist, *vl, *vl2, *newvlist;
+   proplinkptr plink, ptop;
+   int pcount, p, i, j, k, pmatch, ival, crit, ctype;
+   double dval;
+   static struct valuelist nullvl, dfltvl;
+   char multiple[2];
+   int changed = 0;
+
+   multiple[1] = '\0';
+   multiple[0] = (serial == TRUE) ? 'S' : 'M';
+
+   nullvl.type = PROP_INTEGER;
+   nullvl.value.ival = 0;
+
+   if (run == 0) return 0;	// Sanity check.
+
+   // Look through master cell property list and create
+   // an array of properties of interest to fill in order.
+
+   m_rec = NULL;
+   ptop = NULL;
+   pcount = 1;
+   crit = -1;
+   ctype = -1;
+   kl = (struct property *)HashFirst(&(tp->propdict));
+   while (kl != NULL) {
+      // Make a linked list so we don't have to iterate through the hash again 
+      plink = (proplinkptr)MALLOC(sizeof(proplink));
+      plink->prop = kl;
+      plink->next = ptop;
+      ptop = plink;
+      if ((*matchfunc)(kl->key, multiple)) {
+	 kl->idx = 0;
+	 m_rec = kl;
+      }
+      else
+	 kl->idx = pcount++;
+
+      // Set critical property index, if there is one.
+      // To do: deal with possibility of multiple critical properties
+      // per instance?
+
+      if ((serial == FALSE) && (kl->merge == MERGE_ADD_CRIT ||
+		kl->merge == MERGE_PAR_CRIT)) {
+	 crit = kl->idx;
+	 ctype = kl->merge;
+      }
+      else if ((serial == TRUE) && (kl->merge == MERGE_SER_CRIT)) {
+	 crit = kl->idx;
+	 ctype = MERGE_ADD_CRIT;
+      }
+      kl = (struct property *)HashNext(&(tp->propdict));
+   }
+   // Recast the linked list as an array
+   plist = (struct property **)CALLOC(pcount, sizeof(struct property *));
+   vlist = (struct valuelist ***)CALLOC(pcount, sizeof(struct valuelist **));
+   if (m_rec == NULL)
+      vlist[0] = (struct valuelist **)CALLOC(run, sizeof(struct valuelist *));
+
+   while (ptop != NULL) {
+      plist[ptop->prop->idx] = ptop->prop;
+      vlist[ptop->prop->idx] = (struct valuelist **)CALLOC(run,
+		sizeof(struct valuelist *));
+      plink = ptop;
+      FREE(ptop);
+      ptop = plink->next;
+   }
+   
+   // Now, for each property record, sort the properties of interest
+   // so that they are all in order.  Property "M" ("S") goes in position
+   // zero.
+
+   i = 0;
+   for (ob2 = ob; ob2 && ob2->type == PROPERTY; ob2 = ob2->next) {
+      for (p = 0;; p++) {
+	 vl = &(ob2->instance.props[p]);
+	 if (vl->type == PROP_ENDLIST) break;
+	 if (vl->key == NULL) continue;
+	 kl = (struct property *)HashLookup(vl->key, &(tp->propdict));
+	 if (kl == NULL && m_rec == NULL) {
+	    if ((*matchfunc)(vl->key, multiple)) {
+	       vlist[0][i] = vl;
+	    }
+	 }
+ 	 else if (kl != NULL) {
+	    vlist[kl->idx][i] = vl;
+	 }
+      }
+      if (++i == run) break;
+   }
+
+   // Check for "M" ("S") records with type double and promote them to integer
+   for (i = 0; i < run; i++) {
+      vl = vlist[0][i];
+      if (vl != NULL) {
+         if (vl->type == PROP_DOUBLE) {
+            vl->type = PROP_INTEGER;
+	    vl->value.ival = (int)(vl->value.dval + 0.5);
+         }
+      }
+   }
+
+   // Now combine records with same properties by summing M (S).
+   for (i = 0; i < run - 1; i++) {
+      for (j = 1; j < run; j++) {
+	 pmatch = 0;
+	 for (p = 1; p < pcount; p++) {
+	    kl = plist[p];
+	    vl = vlist[p][i];
+	    vl2 = vlist[p][j];
+	    if (vl == NULL && vl2 == NULL) {
+	       pmatch++;
+	       continue;
+	    }
+
+	    // If either value is missing, it takes kl->pdefault
+	    // and must apply promotions if necessary.
+
+	    else if (vl == NULL || vl2 == NULL) {
+		if (vl == NULL) {
+		    if (kl->type != vlist[p][j]->type)
+			PromoteProperty(kl, vl2);
+		}
+		else {
+		    if (kl->type != vlist[p][i]->type)
+			PromoteProperty(kl, vl);
+		}
+		vl = &dfltvl;
+		dfltvl.type = kl->type;
+		switch (kl->type) {
+		    case PROP_STRING:
+			dfltvl.value.string = kl->pdefault.string;
+			break;
+		    case PROP_INTEGER:
+			dfltvl.value.ival = kl->pdefault.ival;
+			break;
+		    case PROP_DOUBLE:
+		    case PROP_VALUE:
+			dfltvl.value.ival = kl->pdefault.ival;
+			break;
+		    case PROP_EXPRESSION:
+			dfltvl.value.stack = kl->pdefault.stack;
+			break;
+		}
+	    }
+
+	    // Critical properties can be multiplied up by M (S) and do not
+	    // need to match.  May want a more nuanced comparison, though.
+	    if (p == crit) {
+	       pmatch++;
+	       continue;
+	    }
+
+	    switch(vl->type) {
+	       case PROP_DOUBLE:
+	       case PROP_VALUE:
+	          dval = 2 * fabs(vl->value.dval - vl2->value.dval)
+				/ (vl->value.dval + vl2->value.dval);
+		  if (dval <= kl->slop.dval) pmatch++;
+		  break;
+	       case PROP_INTEGER:
+		  ival = abs(vl->value.ival - vl2->value.ival);
+		  if (ival <= kl->slop.ival) pmatch++; 
+		  break;
+	       case PROP_STRING:
+		  if ((*matchfunc)(vl->value.string, vl2->value.string)) pmatch++;
+		  break;
+
+	       /* will not attempt to match expressions, but it could
+		* be done with some minor effort by matching each
+		* stack token and comparing those that are strings.
+		*/
+	    }
+	 }
+	 if (pmatch == (pcount - 1)) {
+	    // Sum M (S) (p == 0) records and remove one record
+	    if (vlist[0][i] == NULL) {
+	       // Add this to the end of the property record
+	       // find ith record in ob
+	       p = 0;
+	       for (ob2 = ob; p != i; ob2 = ob2->next, p++);
+	       // Count entries, add one, reallocate
+	       for (p = 0;; p++) {
+		  vl = &ob2->instance.props[p];
+		  if (vl->type == PROP_ENDLIST) break;
+	       }
+	       p++;
+	       newvlist = (struct valuelist *)CALLOC(p + 1,
+				sizeof(struct valuelist));
+	       // Move end record forward
+	       vl = &newvlist[p];
+	       vl->key = NULL;
+	       vl->type = PROP_ENDLIST;
+	       vl->value.ival = 0;
+
+	       // Add "M" ("S") record behind it
+	       vl = &newvlist[--p];
+	       vl->key = strsave(multiple);
+	       vl->type = PROP_INTEGER;
+	       vl->value.ival = 1;
+	       vlist[0][i] = vl;
+	       // Copy the rest of the records and regenerate vlist
+	       for (--p; p >= 0; p--) {
+	          vl = &newvlist[p];
+	          vl->key = ob2->instance.props[p].key;
+	          vl->type = ob2->instance.props[p].type;
+	          vl->value = ob2->instance.props[p].value;
+
+		  kl = (struct property *)HashLookup(vl->key, &(tp->propdict));
+		  if (kl != NULL) vlist[kl->idx][i] = vl;
+	       }
+
+	       // Replace instance properties with the new list
+	       FREE(ob2->instance.props);
+	       ob2->instance.props = newvlist;
+	    }
+
+	    if (vlist[0][j] == NULL) {
+	       vlist[0][j] = &nullvl;	// Mark this position
+	       vlist[0][i]->value.ival++;
+	    }
+	    else if (vlist[0][i]->value.ival > 0) {
+	       vlist[0][i]->value.ival += vlist[0][j]->value.ival;
+	       vlist[0][j]->value.ival = 0;
+	    }
+	 }
+         else j++;
+      }
+   }
+
+   // For the special case of run == 1, reduce M (or S) to 1 by
+   // merging the critical property (if any)
+
+   if ((run == 1) && (crit != -1) && (vlist[0][0] != NULL)) {
+      int mult = vlist[0][0]->value.ival;
+      if (mult > 1) {
+         vl = vlist[crit][0];
+
+         if ((serial == TRUE) && (ctype = MERGE_SER_CRIT)) {
+	    if (vl->type == PROP_INTEGER)
+	       vl->value.ival *= mult;
+	    else if (vl->type == PROP_DOUBLE)
+	       vl->value.dval *= (double)mult;
+	    vlist[0][0]->value.ival = 1;
+	    changed += mult;
+         }
+         else if (serial == FALSE && (ctype = MERGE_ADD_CRIT)) {
+	    if (vl->type == PROP_INTEGER)
+	       vl->value.ival *= mult;
+	    else if (vl->type == PROP_DOUBLE)
+	       vl->value.dval *= (double)mult;
+	    vlist[0][0]->value.ival = 1;
+	    changed += mult;
+         }
+         else if (serial == FALSE && (ctype = MERGE_PAR_CRIT)) {
+	    /* Technically one should check if divide-by-mult */	
+	    /* reduces the value to < 1 and promote to double */
+            /* if so, but that's a very unlikely case.	      */
+	    if (vl->type == PROP_INTEGER)
+	       vl->value.ival /= mult;
+	    else if (vl->type == PROP_DOUBLE)
+	       vl->value.dval /= (double)mult;
+	    vlist[0][0]->value.ival = 1;
+	    changed += mult;
+         }
+	 if (changed > 0) {
+	    if (serial)
+	       Printf("Combined %d serial devices.\n", changed);
+	    else
+	       Printf("Combined %d parallel devices.\n", changed);
+	 }
+      }
+   }
+
+   // Remove entries with M (S) = 0
+   ob2 = ob;
+   for (i = 1; i < run; i++) {
+      vl = vlist[0][i];
+      if (vl != NULL && vl->value.ival == 0) {
+	 obt = ob2->next;
+	 ob2->next = ob2->next->next;
+	 FreeObjectAndHash(obt, tp);
+         changed++;
+      }
+      else
+	 ob2 = ob2->next;
+   }
+
+   // Cleanup memory allocation
+   for (p = 0; p < pcount; p++) {
+      kl = (struct property *)plist[p];
+      if (kl) kl->idx = 0;
+      FREE(vlist[p]);
+   }
+   FREE(plist);
+   FREE(vlist);
+
+   return changed;
+}
+
+#ifdef TCL_NETGEN
+
+/*--------------------------------------------------------------*/
+/* Property list starts with a pair of instance names, followed	*/
+/* by a list of corresponding but mismatched properties.	*/
+/*--------------------------------------------------------------*/
+
+Tcl_Obj *NewPropertyList(char *inst1, char *inst2)
+{
+   Tcl_Obj *proplist;
+   Tcl_Obj *mpair, *instobj;
+
+   mpair = Tcl_NewListObj(0, NULL);
+   instobj = Tcl_NewStringObj(inst1, -1);
+   Tcl_ListObjAppendElement(netgeninterp, mpair, instobj);
+   instobj = Tcl_NewStringObj(inst2, -1);
+   Tcl_ListObjAppendElement(netgeninterp, mpair, instobj);
+
+   proplist = Tcl_NewListObj(0, NULL);
+   Tcl_ListObjAppendElement(netgeninterp, proplist, mpair);
+   return proplist;
+}
+
+/*--------------------------------------------------------------*/
+/* Generate a Tcl list entry for a property mismatching pair	*/
+/*--------------------------------------------------------------*/
+
+Tcl_Obj *PropertyList(struct valuelist *vl1, struct valuelist *vl2)
+{
+   Tcl_Obj *mobj, *mpair, *propobj;
+
+   mpair = Tcl_NewListObj(0, NULL);
+
+   mobj = Tcl_NewListObj(0, NULL);
+   if (vl1 == NULL)
+      propobj = Tcl_NewStringObj("(no matching parameter)", -1);
+   else
+      propobj = Tcl_NewStringObj(vl1->key, -1);
+   Tcl_ListObjAppendElement(netgeninterp, mobj, propobj);
+
+   if (vl1 == NULL)
+      propobj = Tcl_NewStringObj("(no value)", -1);
+   else if (vl1->type == PROP_INTEGER)
+      propobj = Tcl_NewIntObj(vl1->value.ival);
+   else if (vl1->type == PROP_DOUBLE)
+      propobj = Tcl_NewDoubleObj(vl1->value.dval);
+   else if (vl1->type == PROP_STRING)
+      propobj = Tcl_NewStringObj(vl1->value.string, -1);
+   Tcl_ListObjAppendElement(netgeninterp, mobj, propobj);
+
+   Tcl_ListObjAppendElement(netgeninterp, mpair, mobj);
+
+   mobj = Tcl_NewListObj(0, NULL);
+   if (vl2 == NULL)
+      propobj = Tcl_NewStringObj("(no matching parameter)", -1);
+   else
+      propobj = Tcl_NewStringObj(vl2->key, -1);
+   Tcl_ListObjAppendElement(netgeninterp, mobj, propobj);
+
+   if (vl2 == NULL)
+      propobj = Tcl_NewStringObj("(no value)", -1);
+   else if (vl2->type == PROP_INTEGER)
+      propobj = Tcl_NewIntObj(vl2->value.ival);
+   else if (vl2->type == PROP_DOUBLE)
+      propobj = Tcl_NewDoubleObj(vl2->value.dval);
+   else if (vl2->type == PROP_STRING)
+      propobj = Tcl_NewStringObj(vl2->value.string, -1);
+   else if (vl2->type == PROP_EXPRESSION)
+      propobj = Tcl_NewStringObj("(unresolved expression)", -1);
+   Tcl_ListObjAppendElement(netgeninterp, mobj, propobj);
+
+   Tcl_ListObjAppendElement(netgeninterp, mpair, mobj);
+   return mpair;
+}
+#endif
+
+/*--------------------------------------------------------------*/
+/* The core of PropertyMatch(), check if a single property	*/
+/* record matches between instance tp1 and tp2.  If do_print	*/
+/* is 1, then print the mismatch results.			*/
+/*								*/
+/* If rval != NULL, then return the count of mismatches		*/
+/* and return -1 in *rval if there is a mismatch in the		*/
+/* number of property records following the one checked.  If	*/
+/* rval == NULL, then return 1 if there is a mismatch in M or	*/
+/* 2 if there is a mismatch in S; otherwise return 0, meaning	*/
+/* that no final optimization is possible.			*/
+/*--------------------------------------------------------------*/
+
+#ifdef TCL_NETGEN
+Tcl_Obj *
+#else
+void
+#endif
+PropertyCheckMismatch(struct objlist *tp1, struct nlist *tc1,
+	char *inst1, struct objlist *tp2, struct nlist *tc2,
+	char *inst2, int do_print, int do_list, int *count,
+	int *rval)
+{
+   int mismatches = 0;
+   int len2, *check2;
+   struct property *kl1, *kl2;
+   struct valuelist *vl1, *vl2;
+   int i, j;
+   int islop;
+   int ival1, ival2;
+   double pd, dslop, dval1, dval2;
+   static struct valuelist mvl, svl;
+   static struct property klm, kls;
+   static char mkey[2], skey[2];
+
+#ifdef TCL_NETGEN
+   Tcl_Obj *proplist = NULL;
+#endif
+
+   // Set up static records representing property M = 1 and S = 1
+   mkey[0] = 'M';
+   mkey[1] = '\0';
+   skey[0] = 'S';
+   skey[1] = '\0';
+   mvl.type = PROP_INTEGER;
+   mvl.value.ival = 1;
+   mvl.key = mkey;
+   svl.type = PROP_INTEGER;
+   svl.value.ival = 1;
+   svl.key = skey;
+   klm.key = mkey;
+   klm.type = PROP_INTEGER;
+   klm.merge = 0;
+   klm.pdefault.ival = 1;
+   klm.slop.ival = 0;
+   kls.key = skey;
+   kls.type = PROP_INTEGER;
+   kls.merge = 0;
+   kls.pdefault.ival = 1;
+   kls.slop.ival = 0;
+
+   // Find length of second property list.  Create checklist to check
+   // off each property that has been compared.
+   for (j = 0;; j++) {
+      vl2 = &(tp2->instance.props[j]);
+      if (vl2->type == PROP_ENDLIST) break;
+   }
+   len2 = j;
+   if (len2 > 0)
+      check2 = (int *)CALLOC(len2, sizeof(int));
+   else
+      check2 = NULL;
+
+   for (i = 0;;) {
+      vl1 = &(tp1->instance.props[i]);
+      if (vl1->type == PROP_ENDLIST) {
+	 /* Any zeros in the check2 list are properties that	*/
+	 /* are missing in the 1st circuit.  First check for M	*/
+	 /* or S records that can be compared against an 	*/
+	 /* implicit record of M = 1 or S = 1.  Then, any	*/
+	 /* remaining entries are errors.			*/
+
+	 for (j = 0; j < len2; j++) {
+	    if (check2[j] == 0) {
+               vl2 = &(tp2->instance.props[j]);
+	       vl1 = &mvl;
+	       if ((*matchfunc)(vl1->key, vl2->key)) break;
+	       vl1 = &svl;
+	       if ((*matchfunc)(vl1->key, vl2->key)) break;
+
+	       /* Check if property is "of interest".	*/
+	       kl2 = (struct property *)HashLookup(vl2->key, &(tc2->propdict));
+	       if (kl2 != NULL) {
+
+	          /* No match */
+	          if (do_print) {
+	             Fprintf(stdout, "%s vs. %s:\n", inst1, inst2);
+	             Fprintf(stdout, "Property %s in circuit2 has no matching "
+				"property in circuit1\n",  vl2->key);
+	          }
+#ifdef TCL_NETGEN
+	          if (do_list) {
+	              Tcl_Obj *mpair = PropertyList(NULL, vl2);
+		      if (!proplist) proplist = Tcl_NewListObj(0, NULL);
+		      Tcl_ListObjAppendElement(netgeninterp, proplist, mpair);
+	          }
+#endif
+	          if (rval != NULL) mismatches++;
+	       }
+	    }
+	 }
+	 if (j == len2) break;
+      }
+      else i++;
+      if (vl1 == NULL) continue;
+      if (vl1->key == NULL) continue;
+
+      /* Check if this is a "property of interest". */
+      kl1 = (struct property *)HashLookup(vl1->key, &(tc1->propdict));
+      if (kl1 == NULL) {
+	 if ((*matchfunc)(vl1->key, mvl.key))
+	    kl1 = &klm;
+	 else if ((*matchfunc)(vl1->key, svl.key))
+	    kl1 = &kls;
+	 else {
+            if (j < len2) check2[j] = 1;	/* Mark as checked */
+	    continue;
+	 }
+      }
+
+      /* Find the matching property in vl2. */
+
+      for (j = 0;; j++) {
+         vl2 = &(tp2->instance.props[j]);
+	 if (vl2->type == PROP_ENDLIST) break;
+	 if (check2[j] == 0)
+	    if ((*matchfunc)(vl1->key, vl2->key)) break;
+      }
+      if (vl2->type == PROP_ENDLIST) {
+	 /* Check against M and S records;  a missing M or S	*/
+	 /* record is equivalent to M = 1 or S = 1.		*/
+
+	 if (vl1 != &mvl)
+	    if ((*matchfunc)(vl1->key, mvl.key)) vl2 = &mvl;
+	 if (vl1 != &svl)
+	    if ((*matchfunc)(vl1->key, svl.key)) vl2 = &svl;
+      }
+      if (vl2->type == PROP_ENDLIST) {
+	 /* vl1 had a property of interest that was not found	*/
+         /* in vl2, so mark this as a missing property error.	*/
+
+         if (do_print) {
+	    Fprintf(stdout, "%s vs. %s:\n", inst1, inst2);
+	    Fprintf(stdout, "Property %s in circuit1 has no matching "
+			"property in circuit2\n",  vl1->key);
+	 }
+#ifdef TCL_NETGEN
+         if (do_list) {
+             Tcl_Obj *mpair = PropertyList(vl1, NULL);
+	     if (!proplist) proplist = Tcl_NewListObj(0, NULL);
+	     Tcl_ListObjAppendElement(netgeninterp, proplist, mpair);
+         }
+#endif
+	 if (rval != NULL) mismatches++;
+      }
+      else if (j < len2)
+	 check2[j] = 1;		/* Mark property as checked */
+
+      if (vl2 == NULL) continue;
+      if (vl2->key == NULL) continue;
+
+      /* Both device classes must agree on the properties to compare */
+      kl2 = (struct property *)HashLookup(vl2->key, &(tc2->propdict));
+      if (kl2 == NULL) {
+         if (vl2 == &mvl)
+	    kl2 = &klm;
+	 else if (vl2 == &svl)
+	    kl2 = &kls;
+	 else if (vl1 == &mvl)
+	    kl2 = &klm;
+	 else if (vl1 == &svl)
+	    kl2 = &kls;
+	 else
+	    continue;
+      }
+
+      /* Watch out for uninitialized entries in cell def */
+      if (vl1->type == vl2->type) {
+	 if (kl1->type == PROP_STRING && kl1->pdefault.string == NULL)
+	    SetPropertyDefault(kl1, vl1);
+	 if (kl2->type == PROP_STRING && kl2->pdefault.string == NULL)
+	    SetPropertyDefault(kl2, vl2);
+      }
+
+      /* Promote properties as necessary to make sure they all match */
+      if (kl1->type != vl1->type) PromoteProperty(kl1, vl1);
+      if (kl2->type != vl2->type) PromoteProperty(kl2, vl2);
+      if (kl1->type != vl2->type) PromoteProperty(kl1, vl2);
+      if (vl1->type != kl2->type) PromoteProperty(kl2, vl1);
+
+      if (vl1->type != vl2->type) {
+	 if (do_print && (vl1->type != vl2->type)) {
+	    if (mismatches == 0)
+		Fprintf(stdout, "%s vs. %s:\n", inst1, inst2);
+
+	    Fprintf(stdout, " %s circuit1: ", kl1->key);
+	    switch (vl1->type) {
+		case PROP_DOUBLE:
+		case PROP_VALUE:
+		    Fprintf(stdout, "%g", vl1->value.dval);
+		    break;
+		case PROP_INTEGER:
+		    Fprintf(stdout, "%d", vl1->value.ival);
+		    break;
+		case PROP_STRING:
+		    Fprintf(stdout, "\"%s\"", vl1->value.string);
+		    break;
+		case PROP_EXPRESSION:
+		    Fprintf(stdout, "(unresolved expression)");
+		    break;
+	    }
+	    Fprintf(stdout, "   ");
+	    switch (vl2->type) {
+		case PROP_DOUBLE:
+		case PROP_VALUE:
+		    Fprintf(stdout, "%g", vl2->value.dval);
+		    break;
+		case PROP_INTEGER:
+		    Fprintf(stdout, "%d", vl2->value.ival);
+		    break;
+		case PROP_STRING:
+		    Fprintf(stdout, "\"%s\"", vl2->value.string);
+		    break;
+		case PROP_EXPRESSION:
+		    Fprintf(stdout, "(unresolved expression)");
+		    break;
+	    }
+	    Fprintf(stdout, "  (property type mismatch)\n");
+	 }
+#ifdef TCL_NETGEN
+         if (do_list) {
+             Tcl_Obj *mpair = PropertyList(vl1, vl2);
+	     if (!proplist) proplist = Tcl_NewListObj(0, NULL);
+	     Tcl_ListObjAppendElement(netgeninterp, proplist, mpair);
+         }
+#endif
+	 if (rval != NULL) mismatches++;
+      }
+
+      else switch (kl1->type) {
+	 case PROP_DOUBLE:
+	 case PROP_VALUE:
+	    dval1 = vl1->value.dval;
+	    dval2 = vl2->value.dval;
+
+	    dslop = MAX(kl1->slop.dval, kl2->slop.dval);
+	    pd = 2 * fabs(dval1 - dval2) / (dval1 + dval2);
+	    if (pd > dslop) {
+	       if (do_print) {
+		  if (mismatches == 0)
+		     Fprintf(stdout, "%s vs. %s:\n", inst1, inst2);
+		  Fprintf(stdout, " %s circuit1: %g   circuit2: %g   ",
+				kl1->key, dval1, dval2);
+		  if (vl1->value.dval > 0.0 && vl2->value.dval > 0.0)
+		     Fprintf(stdout, "(delta=%.3g%%, cutoff=%.3g%%)\n",
+				100 * pd, 100 * dslop);
+		  else
+		     Fprintf(stdout, "\n");
+	       }
+#ifdef TCL_NETGEN
+	       if (do_list) {
+                  Tcl_Obj *mpair = PropertyList(vl1, vl2);
+		  if (!proplist) proplist = Tcl_NewListObj(0, NULL);
+	          Tcl_ListObjAppendElement(netgeninterp, proplist, mpair);
+               }
+#endif
+	       if (rval != NULL) mismatches++;
+	    }
+	    break;
+	 case PROP_INTEGER:
+	    ival1 = vl1->value.ival;
+	    ival2 = vl2->value.ival;
+
+	    islop = MAX(kl1->slop.ival, kl2->slop.ival);
+	    if (abs(ival1 - ival2) > islop) {
+	       if (do_print) {
+		  if (mismatches == 0)
+		     Fprintf(stdout, "%s vs. %s:\n", inst1, inst2);
+		  Fprintf(stdout, " %s circuit1: %d   circuit2: %d   ",
+				kl1->key, ival1, ival2);
+		  if (ival1 > 0 && ival2 > 0)
+		     Fprintf(stdout, "(delta=%d, cutoff=%d)\n",
+				abs(ival1 - ival2), islop);
+		  else
+		     Fprintf(stdout, "\n");
+	       }
+#ifdef TCL_NETGEN
+	       if (do_list) {
+                  Tcl_Obj *mpair = PropertyList(vl1, vl2);
+		  if (!proplist) proplist = Tcl_NewListObj(0, NULL);
+	          Tcl_ListObjAppendElement(netgeninterp, proplist, mpair);
+               }
+#endif
+	       if (rval != NULL) mismatches++;
+	       else if (*(kl1->key + 1) == '\0') {
+		  if (toupper(*kl1->key) == 'M')
+		     mismatches = 1;
+		  else if (toupper(*kl1->key) == 'S')
+		     mismatches = 2;
+	       }
+	    }
+	    break;
+	 case PROP_STRING:
+	    islop = (int)(MAX(kl1->slop.dval, kl2->slop.dval) + 0.5);
+	    if (islop == 0) {
+	       if (!(*matchfunc)(vl1->value.string, vl2->value.string)) {
+		  if (do_print) {
+		     if (mismatches == 0)
+		        Fprintf(stdout, "%s vs. %s:\n", inst1, inst2);
+		     Fprintf(stdout, " %s circuit1: \"%s\"   "
+				"circuit2: \"%s\"   (exact match req'd)\n",
+				kl1->key, vl1->value.string,
+				vl2->value.string);
+		  }
+#ifdef TCL_NETGEN
+	          if (do_list) {
+                     Tcl_Obj *mpair = PropertyList(vl1, vl2);
+		     if (!proplist) proplist = Tcl_NewListObj(0, NULL);
+	             Tcl_ListObjAppendElement(netgeninterp, proplist, mpair);
+                  }
+#endif
+	          if (rval != NULL) mismatches++;
+	       }
+	    }
+	    else {
+	       if (strncasecmp(vl1->value.string, vl2->value.string, islop)) {
+		  if (do_print) {
+		     if (mismatches == 0)
+		        Fprintf(stdout, "%s vs. %s:\n", inst1, inst2);
+		     Fprintf(stdout,  " %s circuit1: \"%s\"   "
+				"circuit2: \"%s\"   (check to %d chars.)\n",
+		      		kl1->key, vl1->value.string,
+				vl2->value.string, islop);
+		  }
+#ifdef TCL_NETGEN
+	          if (do_list) {
+                     Tcl_Obj *mpair = PropertyList(vl1, vl2);
+		     if (!proplist) proplist = Tcl_NewListObj(0, NULL);
+	             Tcl_ListObjAppendElement(netgeninterp, proplist, mpair);
+                  }
+#endif
+	          if (rval != NULL) mismatches++;
+	       }
+	    }
+	    break;
+	 case PROP_EXPRESSION:
+	    /* Expressions could potentially be compared. . . */
+	    if (do_print)
+	       Fprintf(stdout,  " %s (unresolved expressions.)\n", kl1->key);
+#ifdef TCL_NETGEN
+	    if (do_list) {
+               Tcl_Obj *mpair = PropertyList(vl1, vl2);
+	       if (!proplist) proplist = Tcl_NewListObj(0, NULL);
+	       Tcl_ListObjAppendElement(netgeninterp, proplist, mpair);
+            }
+#endif
+	    if (rval != NULL) mismatches++;
+	    break;
+      }
+      if ((vl1 == NULL && vl2 != NULL) || (vl1 != NULL && vl2 == NULL))
+	 /* Different number of properties of interest */
+	 if (rval) *rval = -1;
+   }
+
+   if (len2 > 0) FREE(check2);
+   *count = mismatches;
+
+#ifdef TCL_NETGEN
+   return proplist;
+#endif
+
+}
+
+/*--------------------------------------------------------------*/
+/* Dump a description of a device's serial/parallel network	*/
+/*--------------------------------------------------------------*/
+
+void DumpNetwork(struct objlist *ob, int cidx)
+{
+    struct valuelist *vl;
+    struct objlist *tp;
+    int i;
+
+    for (tp = ob; tp && (tp->type != PROPERTY); tp = tp->next)
+	if ((tp > ob) && (tp->type == FIRSTPIN))
+	    return;
+
+    if (tp == NULL) return;
+
+    Fprintf(stdout, "Circuit %d instance %s network:\n", cidx, ob->instance.name);
+
+    for (; tp && (tp->type == PROPERTY); tp = tp->next) {
+	for (i = 0;; i++) {
+	    vl = &(tp->instance.props[i]);
+	    if (vl->type == PROP_ENDLIST) break;
+	    if (!strcmp(vl->key, "_tag")) {
+		Fprintf(stdout, "%s\n", vl->value.string);
+		continue;
+	    }
+	    Fprintf(stdout, "  %s = ", vl->key); 
+	    switch(vl->type) {
+		case PROP_STRING:
+		    Fprintf(stdout, "%s\n", vl->value.string); 
+		    break;
+		case PROP_INTEGER:
+		    Fprintf(stdout, "%d\n", vl->value.ival); 
+		    break;
+		case PROP_DOUBLE:
+		case PROP_VALUE:
+		    Fprintf(stdout, "%g\n", vl->value.dval); 
+		    break;
+		case PROP_EXPRESSION:
+		    Fprintf(stdout, "(expression)\n");
+		    break;
+	    }
+	}
+    }
+}
+
+/*--------------------------------------------------------------*/
+/* Compare the properties of two objects.  The passed values	*/
+/* ob1 and ob2 are pointers to the first entry (firstpin) of	*/
+/* each object.							*/
+/*								*/
+/* Return -1 on complete failure (should not happen), or	*/
+/* return the number of mismatched properties (0 = perfect	*/
+/* match of all properties, or there were no properties to	*/
+/* compare).							*/
+/*								*/
+/* NOTE:  ob1 must belong to Circuit1, and ob2 must belong to	*/
+/* Circuit2.  The calling procedure is responsble for ensuring	*/
+/* that this is true.						*/
+/*--------------------------------------------------------------*/
+
+#ifdef TCL_NETGEN
+Tcl_Obj *
+#else
+void
+#endif
+PropertyMatch(struct objlist *ob1, struct objlist *ob2, int do_print,
+		int do_list, int *retval)
+{
+   struct nlist *tc1, *tc2;
+   struct objlist *tp1, *tp2, *obn1, *obn2;
+   struct property *kl1, *kl2;
+   struct valuelist *vl1, *vl2;
+   int t1type, t2type;
+   int i, mismatches = 0, checked_one;
+   int rval = 1;
+   char *inst1, *inst2;
+#ifdef TCL_NETGEN
+   Tcl_Obj *proplist = NULL, *mpair, *mlist;
+#endif
+
+   tc1 = LookupCellFile(ob1->model.class, Circuit1->file);
+   tc2 = LookupCellFile(ob2->model.class, Circuit2->file);
+
+   if (tc1->classhash != tc2->classhash) {
+      *retval = -1;
+#ifdef TCL_NETGEN
+      return NULL;
+#else
+      return;
+#endif
+   }
+
+   /* Find the first property record of each circuit.  obn1, obn2 are	*/
+   /* the last device record before the properties for each device.	*/
+   for (tp1 = ob1->next; (tp1 != NULL) && tp1->type > FIRSTPIN; tp1 = tp1->next)
+      obn1 = tp1;
+   for (tp2 = ob2->next; (tp2 != NULL) && tp2->type > FIRSTPIN; tp2 = tp2->next)
+      obn2 = tp2;
+   if (tp1 && (tp1->type == FIRSTPIN)) tp1 = NULL;	/* tp1 had no properties */
+   if (tp2 && (tp2->type == FIRSTPIN)) tp2 = NULL;	/* tp2 had no properties */
+
+   /* Check if there are any properties to match */
+
+   if ((tp1 == NULL) && (tp2 == NULL)) {
+      *retval = 0;
+#ifdef TCL_NETGEN
+      return NULL;
+#else
+      return;
+#endif
+   }
+   t1type = (tp1 != NULL) ? tp1->type : 0;
+   t2type = (tp2 != NULL) ? tp2->type : 0;
+
+   if (tp1 == NULL)
+      if (t2type != PROPERTY) {
+         *retval = 0;
+#ifdef TCL_NETGEN
+         return NULL;
+#else
+         return;
+#endif
+      }
+	
+   if (tp2 == NULL)
+      if (t1type != PROPERTY) {
+         *retval = 0;
+#ifdef TCL_NETGEN
+         return NULL;
+#else
+         return;
+#endif
+      }
+
+   // Sanity check---shouldn't happen
+   if (tp1 && (t1type == PROPERTY) && (tp1->instance.props == NULL))
+	t1type = UNKNOWN;
+   if (tp2 && (t2type == PROPERTY) && (tp2->instance.props == NULL))
+	t2type = UNKNOWN;
+
+   if ((t1type != PROPERTY) && (t2type != PROPERTY)) {
+      *retval = 0;
+#ifdef TCL_NETGEN
+      return NULL;
+#else
+      return;
+#endif
+   }
+
+   // Attempt to organize devices by serial and parallel combination
+   if (t1type == PROPERTY && t2type == PROPERTY)
+      PropertySortAndCombine(obn1, tc1, obn2, tc2);
+
+   // PropertySortAndCombine can move the first property, so recompute it
+   // for each circuit.
+
+   for (tp1 = ob1; (tp1 != NULL) && tp1->type >= FIRSTPIN; tp1 = tp1->next);
+   for (tp2 = ob2; (tp2 != NULL) && tp2->type >= FIRSTPIN; tp2 = tp2->next);
+
+   // Find name for printing, removing leading slash if needed.
+   inst1 = ob1->instance.name;
+   if (*inst1 == '/') inst1++;
+   inst2 = ob2->instance.name;
+   if (*inst2 == '/') inst2++;
+
+   checked_one = FALSE;
+   while(1) {
+      if ((t1type != PROPERTY) && (checked_one == TRUE)) {
+	 // t2 has more property records than t1, and they did not get
+	 // merged equally by PropertySortAndCombine().
+	 Fprintf(stdout, "Circuit 1 parallel/serial network does not match"
+			" Circuit 2\n");
+	 DumpNetwork(ob1, 1);
+	 DumpNetwork(ob2, 2);
+	 mismatches++;
+      }
+      else if (t1type != PROPERTY) {
+	 // t1 has no properties.  See if t2's properties are required
+	 // to be checked.  If so, flag t2 instance as unmatched
+
+	 for (i = 0;; i++) {
+	    vl2 = &(tp2->instance.props[i]);
+	    if (vl2->type == PROP_ENDLIST) break;
+	    if (vl2 == NULL) continue;
+	    if (vl2->key == NULL) continue;
+	    kl2 = (struct property *)HashLookup(vl2->key, &(tc2->propdict));
+	    if (kl2 != NULL) {
+		// Allowed for one instance to be missing "M" or "S".
+		if (!(*matchfunc)(vl2->key, "M") && !(*matchfunc)(vl2->key, "S"))
+		    break;	// Property is required
+	    }
+	 }
+	 if (vl2->type != PROP_ENDLIST) {
+	    mismatches++;
+	    if (do_print) {
+		if (vl2 && vl2->key)
+		    Fprintf(stdout, "Circuit 2 %s instance %s property"
+				" \"%s\" has no match in circuit 1.\n",
+				Circuit2->name, inst2, vl2->key);
+		else
+		    Fprintf(stdout, "Circuit 2 %s instance %s has no"
+				" property match in circuit 1.\n",
+				Circuit2->name, inst2);
+	    }
+#ifdef TCL_NETGEN
+	    if (do_list) {
+	        mpair = PropertyList(NULL, vl2);
+		if (mpair) {
+		   if (!proplist) proplist = NewPropertyList(inst1, inst2);
+		   Tcl_ListObjAppendElement(netgeninterp, proplist, mpair);
+		}
+	    }
+#endif
+	    rval = -1;
+	 }
+	 else
+	    rval = 0;
+      }
+      else if ((t2type != PROPERTY) && (checked_one == TRUE)) {
+	 // t1 has more property records than t2, and they did not get
+	 // merged equally by PropertySortAndCombine().
+	 Fprintf(stdout, "Circuit 2 parallel/serial network does not match"
+			" Circuit 1\n");
+	 DumpNetwork(ob1, 1);
+	 DumpNetwork(ob2, 2);
+	 mismatches++;
+      }
+      else if (t2type != PROPERTY) {
+	 // t2 has no properties.  See if t1's properties are required
+	 // to be checked.  If so, flag t1 instance as unmatched
+
+	 for (i = 0;; i++) {
+	    vl1 = &(tp1->instance.props[i]);
+	    if (vl1->type == PROP_ENDLIST) break;
+	    if (vl1 == NULL) continue;
+	    if (vl1->key == NULL) continue;
+	    kl1 = (struct property *)HashLookup(vl1->key, &(tc1->propdict));
+	    if (kl1 != NULL) {
+		// Allowed for one instance to be missing "M" or "S".
+		if (!(*matchfunc)(vl1->key, "M") && !(*matchfunc)(vl1->key, "S"))
+		    break;	// Property is required
+	    }
+	 }
+	 if (vl1->type != PROP_ENDLIST) {
+	    mismatches++;
+	    if (do_print) {
+		if (vl1 && vl1->key)
+		    Fprintf(stdout, "Circuit 1 %s instance %s property"
+				" \"%s\" has no match in circuit 2.\n",
+				Circuit1->name, inst1, vl1->key);
+		else
+		    Fprintf(stdout, "Circuit 1 %s instance %s has no"
+				" property match in circuit 2.\n",
+				Circuit1->name, inst1);
+	    }
+#ifdef TCL_NETGEN
+	    if (do_list) {
+	        mpair = PropertyList(vl1, NULL);
+		if (mpair) {
+		   if (!proplist) proplist = NewPropertyList(inst1, inst2);
+		   Tcl_ListObjAppendElement(netgeninterp, proplist, mpair);
+		}
+	    }
+#endif
+	    rval = -1;
+	 }
+	 else
+	    rval = 0;
+      }
+      else {
+	 int multmatch, count;
+	 PropertyCheckMismatch(tp1, tc1, inst1, tp2, tc2,
+			inst2, FALSE, FALSE, &multmatch, NULL);
+	 if (multmatch == 1) {
+	    /* Final attempt:  Reduce M to 1 on both devices */
+	    PropertyOptimize(tp1, tc1, 1, FALSE);
+	    PropertyOptimize(tp2, tc2, 1, FALSE);
+	 }
+	 else if (multmatch == 2) {
+	    /* Final attempt:  Reduce S to 1 on both devices */
+	    PropertyOptimize(tp1, tc1, 1, TRUE);
+	    PropertyOptimize(tp2, tc2, 1, TRUE);
+	 }
+#ifdef TCL_NETGEN
+	 mlist =
+#endif
+	 PropertyCheckMismatch(tp1, tc1, inst1, tp2, tc2,
+			inst2, do_print, do_list, &count, &rval);
+	 mismatches += count;
+#ifdef TCL_NETGEN
+	 if (do_list && (mlist != NULL)) {
+	    if (!proplist) proplist = NewPropertyList(inst1, inst2);
+	    Tcl_ListObjAppendList(netgeninterp, proplist, mlist);
+	 }
+#endif
+      }
+
+      /* Move to the next property record */
+
+      if (tp1) tp1 = tp1->next;
+      if (tp2) tp2 = tp2->next;
+      t1type = (tp1) ? tp1->type : 0;
+      t2type = (tp2) ? tp2->type : 0;
+      if ((t1type != PROPERTY) && (t2type != PROPERTY)) break;
+      checked_one = TRUE;
+   }
+ 
+   *retval = (rval < 0) ? rval : mismatches;
+
+#ifdef TCL_NETGEN
+   return proplist;
+#endif
 }
 
 /*--------------------------------------------------------------*/
@@ -3191,126 +5307,83 @@ void PrintPropertyResults(void)
 /* based on the property values.				*/
 /*								*/
 /* Return -1 on complete failure (bad element class), or else	*/
-/* return the number of mismatched properties (0 = perfect	*/
-/* match of all properties).					*/
+/* return the mismatch number determined by PropertyMatch()	*/
 /*--------------------------------------------------------------*/
 
-int PropertyCheck(struct ElementClass *EC, int do_print)
+#ifdef TCL_NETGEN
+Tcl_Obj *
+#else
+void
+#endif
+PropertyCheck(struct ElementClass *EC, int do_print, int do_list, int *rval)
 {
-   struct Element *E1, *E2;
-   struct nlist *tc1, *tc2;
-   struct objlist *tp1, *tp2;
-   char *key1, *key2;
-   int mismatches = 0;
-   struct keylist *kl;
-   struct valuelist *vl1, *vl2;
+   struct Element *E1, *E2, *Etmp;
+#ifdef TCL_NETGEN
+   Tcl_Obj *mpair;
+#endif
 
    /* This element class should contain exactly two entries,	*/
    /* one belonging to each graph.				*/
 
-   if ((E1 = EC->elements) == NULL) return -1;
-   if ((E2 = EC->elements->next) == NULL) return -1;
-   if (E2->next != NULL) return -1;
-   if (E1->graph == E2->graph) return -1;
+   if (((E1 = EC->elements) == NULL) ||
+	((E2 = EC->elements->next) == NULL) ||
+	(E2->next != NULL) ||
+	(E1->graph == E2->graph))
+   {
+      *rval = -1;
+#ifdef TCL_NETGEN
+      return NULL;
+#else
+      return;
+#endif
+   }
 
    if (E1->graph != Circuit1->file) {	/* Ensure that E1 is Circuit1 */
-      struct Element *Etmp = E1;
+      Etmp = E1;
       E1 = E2;
       E2 = Etmp;
    }
+#ifdef TCL_NETGEN
+   return PropertyMatch(E1->object, E2->object, do_print, do_list, rval);
+#else
+   PropertyMatch(E1->object, E2->object, do_print, do_list, rval);
+#endif
+}
 
-   tc1 = LookupCellFile(E1->object->model, Circuit1->file);
-   tc2 = LookupCellFile(E2->object->model, Circuit2->file);
+/*--------------------------------------------------------------*/
+/* Print results of property checks				*/
+/*--------------------------------------------------------------*/
 
-   if (tc1->classhash != tc2->classhash) return -1;
+void PrintPropertyResults(int do_list)
+{
+    int rval;
+    struct ElementClass *EC;
+#ifdef TCL_NETGEN
 
-   for (tp1 = E1->object; (tp1 != NULL) && tp1->type >= FIRSTPIN; tp1 = tp1->next);
-   for (tp2 = E2->object; (tp2 != NULL) && tp2->type >= FIRSTPIN; tp2 = tp2->next);
+    if (do_list) {
+       Tcl_Obj *proplist, *eprop;
 
-   /* Check if there are any properties to match */
+       proplist = Tcl_NewListObj(0, NULL);
+       for (EC = ElementClasses; EC != NULL; EC = EC->next) {
+ 	   eprop = PropertyCheck(EC, 1, 1, &rval);
+	   if (eprop != NULL)
+	      Tcl_ListObjAppendElement(netgeninterp, proplist, eprop);
+       }
+       Tcl_SetVar2Ex(netgeninterp, "lvs_out", NULL,
+			Tcl_NewStringObj("properties", -1),
+			TCL_APPEND_VALUE | TCL_LIST_ELEMENT);
+       Tcl_SetVar2Ex(netgeninterp, "lvs_out", NULL, proplist,
+			TCL_APPEND_VALUE | TCL_LIST_ELEMENT);
+    }
+    else {
+#endif
 
-   if ((tp1 == NULL) && (tp2 == NULL)) return 0;
-   if (tp1 == NULL) {
-      if (tp2->type != PROPERTY) return 0;  
-      else return -1;
-   }
-   else if (tp2 == NULL) {
-      if (tp1->type != PROPERTY) return 0;
-      else return -1;
-   }
-   if ((tp1->type != PROPERTY) && (tp2->type != PROPERTY)) return 0;  
-   if ((tp1->type != PROPERTY) || (tp2->type != PROPERTY)) return -1;
+    for (EC = ElementClasses; EC != NULL; EC = EC->next)
+ 	PropertyCheck(EC, 1, 0, &rval);
 
-   vl1 = (struct valuelist *)tp1->instance;
-   vl2 = (struct valuelist *)tp2->instance;
-   for (kl = tc1->proplist; kl != NULL; kl = kl->next) {
-      if (vl1 == NULL || vl2 == NULL) break;
-      switch (kl->type) {
-	 case PROP_DOUBLE:
-	    if ((fabs(vl1->value.dval - vl2->value.dval) / vl1->value.dval) > 
-			kl->slop.dval) {
-	       if (do_print) {
-		  if (mismatches == 0)
-		     Fprintf(stdout, "%s vs. %s:\n",
-				E1->object->instance, E2->object->instance);
-		  Fprintf(stdout, " %s circuit1: %g   circuit2: %g   "
-			"(delta=%2.1g%%, cutoff=%2.1g%%)\n",
-			kl->key, vl1->value.dval, vl2->value.dval,
-			100 * fabs(vl1->value.dval - vl2->value.dval) / vl1->value.dval,
-			100 * kl->slop.dval);
-	       }
-	       mismatches++;
-	    }
-	    break;
-	 case PROP_INTEGER:
-	    if (abs(vl1->value.ival - vl2->value.ival) > kl->slop.ival) {
-	       if (do_print) {
-		  if (mismatches == 0)
-		     Fprintf(stdout, "%s vs. %s:\n",
-				E1->object->instance, E2->object->instance);
-		  Fprintf(stdout, " %s circuit1: %d   circuit2: %d   "
-			"(delta=%d, cutoff=%d)\n",
-			kl->key, vl1->value.ival, vl2->value.ival,
-			abs(vl1->value.ival - vl2->value.ival), kl->slop.ival);
-	       }
-	       mismatches++;
-	    }
-	    break;
-	 case PROP_STRING:
-	    if (kl->slop.ival == 0) {
-	       if (strcasecmp(vl1->value.string, vl2->value.string)) {
-		  if (do_print) {
-		     if (mismatches == 0)
-		        Fprintf(stdout, "%s vs. %s:\n",
-				E1->object->instance, E2->object->instance);
-		     Fprintf(stdout, " %s circuit1: %s   circuit2: %s   "
-			"(exact match req'd)\n",
-			kl->key, vl1->value.string, vl2->value.string);
-		  }
-	          mismatches++;
-	       }
-	    }
-	    else {
-	       if (strncasecmp(vl1->value.string, vl2->value.string, kl->slop.ival)) {
-		  if (do_print) {
-		     if (mismatches == 0)
-		        Fprintf(stdout, "%s vs. %s:\n",
-				E1->object->instance, E2->object->instance);
-		     Fprintf(stdout,  " %s circuit1: %s   circuit2: %s   "
-			"(check to %d chars.)\n",
-			kl->key, vl1->value.string, vl2->value.string, kl->slop.ival);
-		  }
-	          mismatches++;
-	       }
-	    }
-	    break;
-      }
-      vl1 = vl1->next;
-      vl2 = vl2->next;
-      if ((vl1 == NULL && vl2 != NULL) || (vl1 != NULL && vl2 == NULL))
-	 return -1;	/* Different number of properties of interest */
-   }
-   return mismatches;
+#ifdef TCL_NETGEN
+    }
+#endif
 }
 
 /*----------------------------------------------------------------------*/
@@ -3325,7 +5398,7 @@ int VerifyMatching(void)
   struct NodeClass *NC;
   struct Element *E;
   struct Node *N;
-  int C1, C2;
+  int C1, C2, result;
 
   if (BadMatchDetected) return(-1);
   
@@ -3337,9 +5410,12 @@ int VerifyMatching(void)
     if (C1 != C2) return(-1);
     if (C1 != 1)
        ret++;
-    else if (PropertyErrorDetected == 0) {
-       if (PropertyCheck(EC, 0) != 0)
-          PropertyErrorDetected = 1;
+    else if (PropertyErrorDetected != 1) {
+       PropertyCheck(EC, 0, 0, &result);
+       if (result > 0)
+	  PropertyErrorDetected = 1;
+       else if (result < 0)
+	  PropertyErrorDetected = -1;
     }
   }
 
@@ -3368,9 +5444,9 @@ void PrintAutomorphisms(void)
       (E->graph == Circuit1->file) ? C1++ : C2++;
     if (C1 != C2) continue;
     if (C1 != 1) {
-      Printf("Element Automorphism:\n");
+      Printf("Device Automorphism:\n");
       for (E = EC->elements; E != NULL; E = E->next)
-	Printf("  Circuit %d: %s\n",E->graph, E->object->instance);
+	Printf("  Circuit %d: %s\n",E->graph, E->object->instance.name);
       Printf("------------------\n");
     }
   }
@@ -3381,7 +5457,7 @@ void PrintAutomorphisms(void)
       (N->graph == Circuit1->file) ? C1++ : C2++;
     if (C1 != C2) continue;
     if (C1 != 1) {
-      Printf("Node Automorphism:\n");
+      Printf("Net Automorphism:\n");
       for (N = NC->nodes; N != NULL; N = N->next)
 	Printf("  Circuit %d: %s\n",N->graph, N->object->name);
       Printf("------------------\n");
@@ -3391,75 +5467,184 @@ void PrintAutomorphisms(void)
 
 /*
  *-------------------------------------------------------------------------
+ * ResolveAutomorphsByPin
  *
- * PermuteAutomorphisms --
+ * Equivalence as many device pairs within an automorphic class by
+ * comparing pin names of those devices connected to pins, and
+ * separating out those devices that are connected to matching pins
+ * in each circuit.
  *
- * For each node automorphism, check if all nodes in the group are ports
- * of the cell.  If so, make all of those pins permutable for each
- * instance in the two circuits.
+ * Return value is the same as VerifyMatching()
+ *-------------------------------------------------------------------------
+ */
+
+int ResolveAutomorphsByPin()
+{
+    struct NodeClass *NC;
+    struct Node *N;
+    int C1, C2;
+    unsigned long newhash, orighash;
+    struct nlist *tc1, *tc2;
+    struct objlist *tob, *ob1, *ob2;
+    int portnum;
+
+    for (NC = NodeClasses; NC != NULL; NC = NC->next) {
+	struct Node *N1, *N2;
+	C1 = C2 = 0;
+	N1 = N2 = NULL;
+	for (N = NC->nodes; N != NULL; N = N->next) {
+	    if (N->graph == Circuit1->file) {
+ 		C1++;
+	    }
+	    else {
+		C2++;
+	    }
+	}
+	if (C1 == C2 && C1 != 1) {
+
+	    /* This is an automorphic class.  For each node in	*/
+	    /* the class, determine if it is a pin.  If so,	*/
+	    /* give it a new hash value, then find the		*/
+	    /* corresponding pin name for the other circuit.	*/
+
+	    orighash = NC->nodes->hashval;
+	    for (N1 = NC->nodes; N1 != NULL; N1 = N1->next) {
+		if (N1->hashval != orighash) continue;
+		ob1 = N1->object;
+		for (N2 = N1->next; N2 != NULL; N2 = N2->next) {
+		    if ((N2->graph != N1->graph) &&
+				(*matchfunc)(N2->object->name, N1->object->name)) {
+			Magic(newhash);
+			N1->hashval = newhash;
+			N2->hashval = newhash;
+			break;
+		    }
+		}
+	    }
+	}
+    }
+
+    FractureElementClass(&ElementClasses); 
+    FractureNodeClass(&NodeClasses); 
+    ExhaustiveSubdivision = 1;
+    while (!Iterate() && VerifyMatching() != -1); 
+    return(VerifyMatching());
+}
+
+/*
+ *-------------------------------------------------------------------------
+ * ResolveAutomorphsByProperty
+ *
+ * Equivalence as many device pairs within an automorphic class by
+ * comparing properties and matching devices with matching properties.
  *
  *-------------------------------------------------------------------------
  */
 
-void PermuteAutomorphisms(void)
+int ResolveAutomorphsByProperty()
 {
-   struct ElementClass *EC;
-   struct NodeClass *NC;
-   struct Element *E;
-   struct Node *N, *N2;
-   int C1, C2, numpins;
-   char *model;
+    struct ElementClass *EC;
+    struct Element *E;
+    int C1, C2, result, badmatch;
+    unsigned long orighash, newhash;
 
-   for (NC = NodeClasses; NC != NULL; NC = NC->next) {
-      struct Node *N1, *N2;
-      C1 = C2 = 0;
-      N1 = N2 = NULL;
-      numpins = 0;
-      for (N = NC->nodes; N != NULL; N = N->next) {
-	 if (IsPort(N->object->type)) numpins++;
-     
-         if (N->graph == Circuit1->file) {
-	    C1++;
-	    N1 = N;
-         }
-         else {
-	    C2++;
-	    N2 = N;
-         }
-      }
-      if (C1 == C2 && C1 != 1 && numpins == (C1 + C2)) {
-	 N = NC->nodes;
-	 model = (N->graph == Circuit1->file) ? Circuit1->name : Circuit2->name;
-	
-	 for (N2 = N; N2 != NULL; N2 = N2->next) {
-	    if (N2->graph == N->graph)
-	       PermuteSetup(model, N->object->name, N2->object->name);
-	 }   
-	 for (N2 = N; N2 != NULL; N2 = N2->next)
-	    if (N2->graph != N->graph)
-	       break;
+    for (EC = ElementClasses; EC != NULL; EC = EC->next) {
+	struct Element *E1, *E2;
+	C1 = C2 = 0;
+	E1 = E2 = NULL;
+	for (E = EC->elements; E != NULL; E = E->next) {
 
-	 model = (N2->graph == Circuit1->file) ? Circuit1->name : Circuit2->name;
-	 for (N = N2; N != NULL; N = N->next) {
-	    if (N->graph == N2->graph)
-	       PermuteSetup(model, N2->object->name, N->object->name);
-	 }   
-      }
-   }
+	    if (E->graph == Circuit1->file)
+		C1++;
+	    else
+		C2++;
+	}
+	if (C1 == C2 && C1 != 1) {
+
+	    /* This is an automorphic class.  For each		*/
+	    /* device, assign a new hash value, then assign	*/
+	    /* the same hash value to all devices with		*/
+	    /* matching properties in either circuit.		*/
+	    /* Continue until all elements have received	*/
+	    /* new hash values.					*/
+
+	    orighash = EC->elements->hashval;
+
+	    /* Properties that fail to match for any reason	*/
+	    /* will only result in the automorphic group being	*/
+	    /* unresolved at this stage.			*/
+
+	    for (E1 = EC->elements; E1 != NULL; E1 = E1->next) {
+		if (E1->hashval != orighash) continue;
+		Magic(newhash);
+		E1->hashval = newhash;
+		C1 = 1;
+		C2 = 0;
+
+		badmatch = FALSE;
+		for (E2 = E1->next; E2 != NULL; E2 = E2->next) {
+		    if (E2->hashval != orighash) continue;
+		    if (E2->graph == E1->graph) continue;
+		    if (E1->graph == Circuit1->file) 
+			PropertyMatch(E1->object, E2->object, FALSE, FALSE, &result);
+		    else
+			PropertyMatch(E2->object, E1->object, FALSE, FALSE, &result);
+		    if (result == 0) {
+			E2->hashval = newhash;
+			if (E2->graph == E1->graph)
+			    C1++;
+			else
+			    C2++;
+		    }
+		}
+
+		// If devices don't match equally in Circuit1 and Circuit2.
+		// Since we don't want a property error to force the whole
+		// circuit to be declared mismatched, arbitrarily revert
+		// some of the components back to the original hashval
+		// until the list lengths match.  The non-matching portions
+		// will appear in the report of propery errors.
+
+		while (C2 > C1) {
+		    for (E2 = EC->elements; E2 != NULL; E2 = E2->next) {
+			if ((E2->graph != E1->graph) && (E2->hashval == newhash)) {
+			    E2->hashval = orighash;
+			    C2--;
+			}
+		    }
+		}
+		while (C1 > C2) {
+		    for (E2 = EC->elements; E2 != NULL; E2 = E2->next) {
+			if ((E2->graph == E1->graph) && (E2->hashval == newhash)) {
+			    E2->hashval = orighash;
+			    C1--;
+			}
+		    }
+		}
+	    }
+	}
+    }
+
+    FractureElementClass(&ElementClasses); 
+    FractureNodeClass(&NodeClasses); 
+    ExhaustiveSubdivision = 1;
+    while (!Iterate() && VerifyMatching() != -1); 
+    return(VerifyMatching());
 }
 
 /*
  *-------------------------------------------------------------------------
  *
- * ResolveAutomorphisms --
+ * ResolveAutormorphisms --
  *
  * Arbitrarily equivalence one pair of elements within an automorphic class
- * return value is the same as VerifyMatching()
+ *
+ * Return value is the same as VerifyMatching()
  *
  *-------------------------------------------------------------------------
  */
 
-int ResolveAutomorphisms(void)
+int ResolveAutomorphisms()
 {
   struct ElementClass *EC;
   struct NodeClass *NC;
@@ -3517,13 +5702,13 @@ int ResolveAutomorphisms(void)
   FractureElementClass(&ElementClasses); 
   FractureNodeClass(&NodeClasses); 
   ExhaustiveSubdivision = 1;
-  while (!Iterate() && VerifyMatching() != -1) ; 
+  while (!Iterate() && VerifyMatching() != -1); 
   return(VerifyMatching());
 }
 
 /*------------------------------------------------------*/
 /* PermuteSetup --					*/
-/* Add an entry to the "PinPermutations" linked list.	*/
+/* Add an entry to a cell's "permutes" linked list.	*/
 /* Return 1 if OK, 0 if error				*/
 /*							*/
 /* NOTE:  When comparing two netlists, it is only	*/
@@ -3536,13 +5721,24 @@ int ResolveAutomorphisms(void)
 /* pins as permuted, and not touch the other "pmos".	*/
 /*------------------------------------------------------*/
 
-int PermuteSetup(char *model, char *pin1, char *pin2)
+int PermuteSetup(char *model, int filenum, char *pin1, char *pin2)
 {
     struct Permutation *newperm, *perm;
     struct nlist *tp;
     struct objlist *obj1, *obj2;
 
-    tp = LookupCell(model);
+    // If -1 is passed as filenum, then re-run this routine on
+    // each of Circuit1 and Circuit2 models.
+
+    if (filenum == -1) {
+	if ((Circuit1 != NULL) && (Circuit1->file != -1))
+	    PermuteSetup(model, Circuit1->file, pin1, pin2);
+	if ((Circuit2 != NULL) && (Circuit2->file != -1))
+	    PermuteSetup(model, Circuit2->file, pin1, pin2);
+	return 1;
+    }
+
+    tp = LookupCellFile(model, filenum);
     if (tp == NULL) {
         Printf("No such model %s\n", model);
        	return 0;
@@ -3560,72 +5756,104 @@ int PermuteSetup(char *model, char *pin1, char *pin2)
 
     /* Now check that this permutation is not already in the list. */
 
-    for (perm = PinPermutations; perm != NULL; perm = perm->next)
-       if ((*matchfunc)(perm->model, model) && (*matchfunc)(perm->pin1, pin1) &&
-		(*matchfunc)(perm->pin1, pin2))
+    for (perm = tp->permutes; perm != NULL; perm = perm->next)
+       if ((*matchfunc)(perm->pin1, pin1) && (*matchfunc)(perm->pin2, pin2))
 	  return 1;
 
     newperm = (struct Permutation *)CALLOC(1, sizeof(struct Permutation));
-    newperm->model = tp->name;
     newperm->pin1 = obj1->name;
     newperm->pin2 = obj2->name;
-    newperm->next = PinPermutations;
-    PinPermutations = newperm;
+    newperm->next = tp->permutes;
+    tp->permutes = newperm;
     return 1;
 }
 
 /*------------------------------------------------------*/
 /* PermuteForget --					*/
-/* Remove an entry from the "PinPermutations" linked	*/
+/* Remove an entry from a cell's "permutes" linked	*/
 /* list.  This makes it more convenient to use the	*/
 /* default permutations and declare individual		*/
 /* exceptions.						*/
+/*							*/
 /* Return 1 if OK, 0 if error				*/
+/*							*/
+/* If pin1 and pin2 are NULL, then forget all		*/
+/* permutations on all pins.				*/
 /*------------------------------------------------------*/
 
-int PermuteForget(char *model, char *pin1, char *pin2)
+int PermuteForget(char *model, int filenum, char *pin1, char *pin2)
 {
-    struct Permutation *lastperm, *perm;
+    struct Permutation *lastperm, *perm, *nextperm;
     struct nlist *tp;
     struct objlist *obj1, *obj2;
 
-    tp = LookupCell(model);
+    // If -1 is passed as filenum, then re-run this routine on
+    // each of Circuit1 and Circuit2 models.
+
+    if (filenum == -1) {
+	if ((Circuit1 != NULL) && (Circuit1->file != -1))
+	    PermuteForget(model, Circuit1->file, pin1, pin2);
+	if ((Circuit2 != NULL) && (Circuit2->file != -1))
+	    PermuteForget(model, Circuit2->file, pin1, pin2);
+	return 1;
+    }
+
+    tp = LookupCellFile(model, filenum);
     if (tp == NULL) {
         Printf("No such model %s\n", model);
        	return 0;
     }
-    obj1 = LookupObject(pin1, tp);
-    if (obj1 == NULL) {
-        Printf("No such pin %s in model %s\n", pin1, model);
-       	return 0;
-    }
-    obj2 = LookupObject(pin2, tp);
-    if (obj2 == NULL) {
-        Printf("No such pin %s in model %s\n", pin2, model);
-       	return 0;
-    }
 
-    /* Now remove this permutation from the list, if it's there. */
+    if ((pin1 != NULL) && (pin2 != NULL)) {
+	obj1 = LookupObject(pin1, tp);
+	if (obj1 == NULL) {
+            Printf("No such pin %s in model %s\n", pin1, model);
+       	    return 0;
+	}
+	obj2 = LookupObject(pin2, tp);
+	if (obj2 == NULL) {
+            Printf("No such pin %s in model %s\n", pin2, model);
+       	    return 0;
+	}
 
-    lastperm = NULL;
-    for (perm = PinPermutations; perm != NULL; perm = perm->next) {
-       if ((*matchfunc)(perm->model, model) && (*matchfunc)(perm->pin1, pin1) &&
-		(*matchfunc)(perm->pin1, pin2)) {
-	   if (lastperm == NULL)
-	      PinPermutations = perm->next;
-	   else
-	      lastperm->next = perm->next;
-	   FREE(perm);
-	   break;
-       }	
-       lastperm = perm;
+	/* Now remove this permutation from the list, if it's there. */
+
+	lastperm = NULL;
+	for (perm = tp->permutes; perm != NULL;) {
+	    nextperm = perm->next;
+	    if (((*matchfunc)(perm->pin1, pin1) &&
+			(*matchfunc)(perm->pin2, pin2)) ||
+			((*matchfunc)(perm->pin1, pin2) &&
+			(*matchfunc)(perm->pin2, pin1))) {
+		if (lastperm == NULL)
+		    tp->permutes = perm->next;
+		else
+		    lastperm->next = perm->next;
+		FREE(perm);
+		break;
+	    }	
+	    else
+		lastperm = perm;
+	    perm = nextperm;
+	}
+    }
+    else {
+
+	/* Blanket remove all permutations for this device */
+
+	lastperm = NULL;
+	for (perm = tp->permutes; perm != NULL;) {
+	    nextperm = perm->next;
+	    FREE(perm);
+	    perm = nextperm;
+	}
     }
     return 1;
 }
 
 /*------------------------------------------------------*/
 /* Permute --						*/
-/* For each entry in the "PinPermutations" linked list,	*/
+/* For each entry in a cell's "permutes" linked list,	*/
 /* set the magic numbers of pin1 and pin2 to be the	*/
 /* same.						*/
 /* Return 1 if OK, 0 if error				*/
@@ -3638,39 +5866,46 @@ int Permute()
    struct Element *E;
    struct NodeList *NL;
    struct objlist *ob;
+   struct nlist *tp;
    unsigned long one, two;
 
-   for (perm = PinPermutations; perm != NULL; perm = perm->next) {
-      for (EC = ElementClasses; EC != NULL; EC = EC->next) {
-         for (E = EC->elements; E != NULL; E = E->next) {
-            if ((*matchfunc)(E->object->model, perm->model)) {
-	       one = two = 0;
-	       ob = E->object;
-	       for (NL = E->nodelist; NL != NULL && !one; NL = NL->next) {
-		  if ((*matchfunc)(perm->pin1, ob->name + strlen(ob->instance) + 1)) 
-		     one = NL->pin_magic;
-		  ob = ob->next;
-	       }
-	       ob = E->object;
-	       for (NL = E->nodelist; NL != NULL && !two; NL = NL->next) {
-		  if ((*matchfunc)(perm->pin2, ob->name + strlen(ob->instance) + 1)) 
-		     two = NL->pin_magic;
-		  ob = ob->next;
-	       }
-	       if (one == 0) {
-		  Printf("Class %s does not have pin %s.\n", perm->model, perm->pin1);
-		  if (two == 0)
-		     Printf("Class %s does not have pin %s.\n", perm->model, perm->pin2);
-		  return (0);
-	       }
-	       if (two == 0) {
-		  Printf("Class %s does not have pin %s.\n", perm->model, perm->pin2);
-		  return (0);
- 	       }
-	       /* update magic numbers */
-	       for (NL = E->nodelist; NL != NULL; NL = NL->next) 
-		  if (NL->pin_magic == one) NL->pin_magic = two;
+   for (EC = ElementClasses; EC != NULL; EC = EC->next) {
+      for (E = EC->elements; E != NULL; E = E->next) {
+	 tp = LookupCellFile(E->object->model.class, E->graph);
+	 for (perm = tp->permutes; perm != NULL; perm = perm->next) {
+	    one = two = 0;
+	    ob = E->object;
+	    for (NL = E->nodelist; NL != NULL && !one; NL = NL->next) {
+	       if ((*matchfunc)(perm->pin1, ob->name
+				+ strlen(ob->instance.name) + 1)) 
+		  one = NL->pin_magic;
+	       ob = ob->next;
 	    }
+	    ob = E->object;
+	    for (NL = E->nodelist; NL != NULL && !two; NL = NL->next) {
+	       if ((*matchfunc)(perm->pin2, ob->name
+				+ strlen(ob->instance.name) + 1)) 
+		  two = NL->pin_magic;
+	       ob = ob->next;
+	    }
+	    if (one == 0) {
+	       Fprintf(stderr, "Class %s does not have pin %s.\n",
+				tp->name, perm->pin1);
+	       if (two == 0)
+		  Fprintf(stderr, "Class %s does not have pin %s.\n",
+				tp->name, perm->pin2);
+	       return (0);
+	    }
+	    if (two == 0) {
+	       Fprintf(stderr, "Class %s does not have pin %s.\n",
+				tp->name, perm->pin2);
+	       return (0);
+ 	    }
+
+	    /* update magic numbers */
+	    for (NL = E->nodelist; NL != NULL; NL = NL->next) 
+	       if (NL->pin_magic == one)
+		  NL->pin_magic = two;
 	 }
       }
    }
@@ -3683,29 +5918,36 @@ int Permute()
 /* Return 1 on success, 0 on failure			*/
 /*------------------------------------------------------*/
 
-int EquivalenceElements(char *name1, char *name2)
+int EquivalenceElements(char *name1, int file1, char *name2, int file2)
 {
   struct ElementClass *EC;
   struct Element *E, *E1, *E2;
 
+  if (Circuit1 == NULL || Circuit2 == NULL) {
+     Printf("Circuits not being compared!\n");
+     return 1;
+  }
+
   for (EC = ElementClasses; EC != NULL; EC = EC->next) {
     E1 = E2 = NULL;
     for (E = EC->elements; E != NULL; E = E->next) {
-      if (E->graph==Circuit1->file && E1==NULL &&
-		(*matchfunc)(E->object->instance, name1)) E1=E;
-      if (E->graph==Circuit2->file && E2==NULL &&
-		(*matchfunc)(E->object->instance, name2)) E2=E;
+      if (E->graph==file1 && E1==NULL &&
+		(*matchfunc)(E->object->instance.name, name1)) E1=E;
+      if (E->graph==file2 && E2==NULL &&
+		(*matchfunc)(E->object->instance.name, name2)) E2=E;
     }
     if (E1 != NULL || E2 != NULL) {
       struct ElementClass *NewList, *EndOfNewList;
       if (E1 == NULL || E2 == NULL) 
-	return(0);  /* did not find both in same equivalence class */
+	return 0;  /* did not find both in same equivalence class */
       /* otherwise, create a new equivalence class */
       for (E = EC->elements; E != NULL; E = E->next) {
 	if (E == E1 || E == E2) E->hashval = 1;
 	else E->hashval = 0;
       }
+
       /* now make new equivalence classes, and tear EC out of old list */
+
       NewList = MakeElist(EC->elements);
       for (EndOfNewList = NewList; EndOfNewList->next != NULL; 
 	   EndOfNewList = EndOfNewList->next) ;
@@ -3720,10 +5962,10 @@ int EquivalenceElements(char *name1, char *name2)
 	EC3->next = NewList;
 	FreeElementClass(EC);
       }
-      return(1);
+      return 1;
     }
   }
-  return(0);
+  return 0;
 }
 
 /*------------------------------------------------------*/
@@ -3732,26 +5974,41 @@ int EquivalenceElements(char *name1, char *name2)
 /* Return 1 on success, 0 on failure			*/
 /*------------------------------------------------------*/
 
-int EquivalenceNodes(char *name1, char *name2)
+int EquivalenceNodes(char *name1, int file1, char *name2, int file2)
 {
   int node1, node2;
   struct objlist *ob;
   struct NodeClass *NC;
   struct Node *N, *N1, *N2;
+  struct nlist *np1, *np2;
 
-  ob = LookupObject(name1, Circuit1);
-  if (ob == NULL) return(0);
+  if (Circuit1 == NULL || Circuit2 == NULL) {
+     Fprintf(stderr, "Circuits not being compared!\n");
+     return 1;
+  }
+
+  if (file1 == Circuit1->file) {
+     np1 = Circuit1;
+     np2 = Circuit2;
+  }
+  else {
+     np1 = Circuit2;
+     np2 = Circuit1;
+  }
+
+  ob = LookupObject(name1, np1);
+  if (ob == NULL) return 0;
   node1 = ob->node;
 
-  ob = LookupObject(name2, Circuit2);
-  if (ob == NULL) return(0);
+  ob = LookupObject(name2, np2);
+  if (ob == NULL) return 0;
   node2 = ob->node;
 
   for (NC = NodeClasses; NC != NULL; NC = NC->next) {
     N1 = N2 = NULL;
     for (N = NC->nodes; N != NULL; N = N->next) {
-      if (N->graph== Circuit1->file && N1==NULL && N->object->node == node1) N1=N;
-      if (N->graph== Circuit2->file && N2==NULL && N->object->node == node2) N2=N;
+      if (N->graph== file1 && N1==NULL && N->object->node == node1) N1=N;
+      if (N->graph== file2 && N2==NULL && N->object->node == node2) N2=N;
     }
     if (N1 != NULL || N2 != NULL) {
       struct NodeClass *NewList, *EndOfNewList;
@@ -3777,10 +6034,10 @@ int EquivalenceNodes(char *name1, char *name2)
 	NC3->next = NewList;
 	FreeNodeClass(NC);
       }
-      return(1);
+      return 1;
     }
   }
-  return(0);
+  return 0;
 }
 
 /*------------------------------------------------------*/
@@ -3790,9 +6047,15 @@ int EquivalenceNodes(char *name1, char *name2)
 /* database.						*/
 /*------------------------------------------------------*/
 
-int IgnoreClass(char *name, int file)
+int IgnoreClass(char *name, int file, unsigned char type)
 {
    struct IgnoreList *newIgnore;
+
+   if ((file == -1) && (Circuit1 != NULL) && (Circuit2 != NULL)) {
+      IgnoreClass(name, Circuit1->file, type);
+      IgnoreClass(name, Circuit2->file, type);
+      return 0;
+   }
 
    newIgnore = (struct IgnoreList *)MALLOC(sizeof(struct IgnoreList));
    newIgnore->next = ClassIgnore;
@@ -3800,9 +6063,13 @@ int IgnoreClass(char *name, int file)
    newIgnore->class = (char *)MALLOC(1 + strlen(name));
    strcpy(newIgnore->class, name);
    newIgnore->file = file;
+   newIgnore->type = type;
 
    /* Remove existing classes from database */
-   ClassDelete(name, file);
+   if (type == IGNORE_CLASS)
+      ClassDelete(name, file);
+   else
+      RemoveShorted(name, file);
 
    return 0;
 }
@@ -3823,16 +6090,61 @@ int EquivalenceClasses(char *name1, int file1, char *name2, int file2)
 {
    char *class1, *class2;
    struct Correspond *newc;
-   struct nlist *tp, *tp2;
+   struct nlist *tp, *tp2, *tpx;
+   unsigned char need_new_seed = 0;
+   int reverse = 0;
 
    if (file1 != -1 && file2 != -1) {
 
       tp = LookupClassEquivalent(name1, file1, file2);
-      if ((*matchfunc)(tp->name, name2)) return 1;	/* Already equivalent */
+      if (tp && (*matchfunc)(tp->name, name2))
+	 return 1;	/* Already equivalent */
 
       tp = LookupCellFile(name1, file1);
       tp2 = LookupCellFile(name2, file2);
-      tp2->classhash = tp->classhash;
+      if (tp->classhash == tp2->classhash)
+	 return 1;	/* Already equivalent */
+
+      /* Where cells with duplicate cell names have been checked and	*/
+      /* found to be equivalent, the original keeps the hash value.	*/
+
+      if (tp->flags & CELL_DUPLICATE)
+	 reverse = 1;
+
+      /* Do a cross-check for each name in the other netlist.  If 	*/
+      /* conflicting names exist, then alter the classhash to make it	*/
+      /* unique.  In the case of duplicate cells, don't do this.	*/
+
+      if (!(tp->flags & CELL_DUPLICATE) && !(tp2->flags & CELL_DUPLICATE)) {
+	 tpx = LookupCellFile(name1, file2);
+	 if (tpx != NULL) need_new_seed = 1;
+	 tpx = LookupCellFile(name2, file1);
+	 if (tpx != NULL) need_new_seed = 1;
+      }
+
+      /* Now make the classhash values the same so that these cells	*/
+      /* are indistinguishable by the netlist comparator.		*/
+
+      if (need_new_seed == 1) {
+	 char *altname;
+	 while (need_new_seed == 1) {
+	    altname = (char *)MALLOC(strlen(name1) + 2);
+	    sprintf(altname, "%s%c", name1, (char)(65 + Random(26)));
+	    tp->classhash = (*hashfunc)(altname, 0);
+
+	    /* Make sure randomly-altered name is not in any netlist */
+	    if ((LookupCellFile(altname, file1) == NULL) &&
+			(LookupCellFile(altname, file2) == NULL))
+		need_new_seed = 0;
+
+	    FREE(altname);
+	 }
+      }
+
+      if (reverse)
+         tp->classhash = tp2->classhash;
+      else
+         tp2->classhash = tp->classhash;
       return 1;
    }
 
@@ -3854,166 +6166,213 @@ int EquivalenceClasses(char *name1, int file1, char *name2, int file2)
 
 #ifdef TCL_NETGEN
 
-/*------------------------------------------------------*/
-/*------------------------------------------------------*/
+/*----------------------------------------------------------------------*/
+/* Callback function used by MatchPins					*/
+/*----------------------------------------------------------------------*/
 
 int reorderpins(struct hashlist *p, int file)
 {
-  struct nlist *ptr;
-  struct objlist *ob, *ob2, *ob3, *obp, *obn;
-  int j, numnodes, instnodes, *nodeorder = NULL, *nodeorphan, orphans;
-  char **portnames, **portorphan, *newname, *cname;
+    struct nlist *ptr;
+    struct nlist *tc2 = Circuit2;
+    struct objlist *ob, *ob2, *firstpin;
+    int i, numports, *nodes, unordered;
+    char **names;
 
-  ptr = (struct nlist *)(p->ptr);
+    ptr = (struct nlist *)(p->ptr);
 
-  if (ptr->file != file) {
-     /* On Circuit1 cells, cull nodes attached to disconnected pins	*/
-     /* (pins not connecting to any device inside the cell)		*/
+    if (ptr->file != file) return 1;	/* Keeps the search going */
 
-     for (ob = ptr->cell; ob != NULL; ob = ob->next) {
-        if (ob->type == FIRSTPIN) {
-	   if ((*matchfunc)(ob->model, Circuit1->name)) {
-	      obp = ob;
-              for (ob2 = Circuit1->cell; ob2 != NULL; ob2 = ob2->next) {
-	         if (ob2->type != PORT) break;
-		 if (ob2->node < 0) {
-		    obp->node = -1;
-		 }
-		 ob = obp;
-	         obp = obp->next;
-	         if (obp == NULL) break;	/* Error condition; shouldn't happen */
-	      }
-	   }
+    /* Pull the port order from the cell and put it in a list	*/
+    /* NOTE:  This method requires the use of "CleanupPins()"	*/
+    /* to make sure that there are no unconnected ports, and	*/
+    /* that there is a 1:1 match between the port lists of all	*/
+    /* instances of both cells.					*/
+
+    numports = 0;
+    unordered = 0;
+    ob2 = tc2->cell;
+    while (ob2 && ob2->type == PORT) {
+	if (ob2->model.port < 0) {
+	    ob2->model.port = numports;
+	    unordered = 1;
 	}
-     }
+	numports++;
+	ob2 = ob2->next;
+    }
+    nodes = (int *)CALLOC(numports, sizeof(int));
+    names = (char **)CALLOC(numports, sizeof(char *));
 
-     return 1;
-  }
+    if (unordered)
+	Fprintf(stderr, "Ports of %s are unordered.  "
+		"Ordering will be arbitrary.\n", tc2->name);
 
-  /* To-do:  When hashing, search over insttab hash record	*/
+    for (ob = ptr->cell; ob != NULL; ) {
+	if (ob->type == FIRSTPIN) {
+	    if ((*matchfunc)(ob->model.class, tc2->name)) {
+		char *sptr = ob->instance.name;
+		if (*sptr == '/') sptr++;
+		if (Debug == TRUE)
+		   Fprintf(stdout, "Reordering pins on instance %s\n", sptr);
 
-  for (ob = ptr->cell; ob != NULL; ob = ob->next) {
-     if (ob->type == FIRSTPIN) {
-	if ((*matchfunc)(ob->model, Circuit2->name)) {
-	   Printf("Reordering pins on instance %s\n", ob->instance);
-
-	   instnodes = 0;
-	   obn = NULL;
-           for (ob2 = ob; ob2 != NULL; ob2 = ob2->next) {
-	      if ((ob2->type < FIRSTPIN) || (ob2->instance == NULL) ||
-			!(*matchfunc)(ob2->instance, ob->instance)) {
-		 obn = ob2;	/* Save so we don't have to use match next time */
-		 break;
-	      }
-	      instnodes++;
-	   }
-
-	   /* We don't actually want to reorder pins, just reorder the node	*/
-	   /* number records.							*/
-
-	   if (nodeorder == NULL) {		/* 1st time through only */
-	      numnodes = 0;
-              for (ob2 = Circuit2->cell; ob2 != NULL; ob2 = ob2->next) {
-	         if (ob2->type != PORT) break;
-		 numnodes++;
-	      }
-	      nodeorder = (int *)CALLOC(numnodes, sizeof(int));
-	      portnames = (char **)CALLOC(numnodes, sizeof(char *));
-
-	      nodeorphan = (int *)CALLOC(numnodes, sizeof(int));
-	      portorphan = (char **)CALLOC(numnodes, sizeof(char *));
-	      orphans = 0;
-	   }
-
-	   if (instnodes < numnodes) {
-	      /* Add dummy nodes to instance, at end of pin list */
-	      for (ob2 = ob; ob2 != NULL; ob2 = ob2->next) {
-		 if (ob2->next == obn) {
-		    for (j = numnodes; j > instnodes; j--) {
-		       obp = (struct objlist *)CALLOC(1, sizeof(struct objlist));
-		       obp->name = (char *)MALLOC(10 + strlen(ob2->instance));
-		       sprintf(obp->name, "%s/dummy%d", ob2->instance, j);
-		       obp->type = j;
-		       obp->model = strsave(ob2->model);
-		       obp->instance = strsave(ob2->instance);
-		       obp->node = 0;		/* Special node number */
-		       obp->next = ob2->next;
-		       ob2->next = obp;
+		firstpin = ob;
+		ob2 = tc2->cell;
+		for (i = 0; i < numports; i++) {
+		    if (ob2->model.port >= numports) {
+			Fprintf(stderr, "Port number %d greater than number "
+				"of ports %d\n", ob2->model.port + 1, numports);
 		    }
-		    break;
-		 }
-	      }
-	   }
-
-	   for (j = 0; j < numnodes; j++) *(nodeorder + j) = -2;
-
-	   obp = ob;
-           for (ob2 = Circuit2->cell; ob2 != NULL; ob2 = ob2->next) {
-	      if (ob2->type != PORT) break;
-	      j = (int)ob2->model;
-
-	      if ((j < numnodes) && (j >= 0)) {
-		 /* Cull nodes on disconnected pins---this should be dependent	*/
-		 /* upon a global option, not done unconditionally!		*/
-	         *(nodeorder + j) = (ob2->node < 0) ? 0 : obp->node;
-	         *(portnames + j) = obp->name;
-	      }
-	      else if (j == -1) {
-		 for (ob3 = ob2->next; IsPort(ob3->type); ob3 = ob3->next);
-		 for (; ob3 != NULL; ob3 = ob3->next) {
-		    if (ob3->node == ob2->node) {
-		       *(nodeorphan + orphans) = (ob2->node < 0) ? 0 : obp->node;
-		       *(portorphan + orphans) = obp->name;
-		       orphans++;
-		       break;
+		    else {
+		        nodes[ob2->model.port] = ob->node;
+		        names[ob2->model.port] = ob->name;
 		    }
-	 	 }
-	      }
-	      obp = obp->next;
-	      if (obp == NULL) break;	/* Error condition; shouldn't happen */
-	   }
+		    ob = ob->next;
+		    ob2 = ob2->next;
+		    if (i < numports - 1) {
+			if (ob == NULL || ob->type <= FIRSTPIN) {
+			    Fprintf(stderr, "Instance of %s has only "
+				"%d of %d ports\n",
+				tc2->name, i + 1, numports);
+			    break;
+			}
+			else if (ob2 == NULL || ob2->type != PORT) {
+			    Fprintf(stderr, "Instance of %s has "
+				"%d ports, expected %d\n",
+				tc2->name, i + 1, numports);
+			    break;
+			}
+		    }
+		}
+		
+		ob = firstpin;
+		for (i = 0; i < numports; i++) {
+		   if (names[i] == NULL) {
+		      ob->name = strsave("port_match_error");
+		      ob->node = -1;
+		   }
+		   else {
+		      ob->node = nodes[i];
+		      ob->name = names[i];
+		   }
+		   HashPtrInstall(ob->name, ob, &(ptr->objdict));
+		   ob = ob->next;
+		   names[i] = NULL;
+		   if (ob == NULL) break;	// Error message already output
+		}
+	    }
+	    else
+		ob = ob->next;
+	}
+	else
+	    ob = ob->next;
+    }
 
-	   // Add back non-matching nodes, if they had connections in the circuit
-	   while (++j < numnodes && orphans > 0) {
-	      orphans--;
-	      *(nodeorder + j) = *(nodeorphan + orphans);
-	      *(portnames + j) = *(portorphan + orphans);
-	   }
+    FREE(nodes);
+    FREE(names);
+    return 1;		/* Continue the search. . . */
+}
 
-	   for (j = 0; j < numnodes; j++) {
-	      if (*(nodeorder + j) < -1) {
-		 Fprintf(stdout, "Unconnected port %d on instance %s\n", j,
-				ob->instance);
-	         *(nodeorder + j) = -1;
-	      }
-	   }
+/*----------------------------------------------------------------------*/
+/* Another callback function used by MatchPins				*/
+/* Search through all instances of each cell, find matches for the	*/
+/* cell passed through "clientdata", and add extra pins whereever an	*/
+/* "UNKNOWN" type is found in the cell's pin list.			*/
+/*									*/
+/* Always return NULL to keep the search going.				*/
+/*----------------------------------------------------------------------*/
 
-	   obp = ob;
-	   j = 0;
-           for (ob2 = obp; ob2 != NULL; ob2 = ob2->next) {
-	      ob2->node = *(nodeorder + j);
-	      if (*(portnames + j) == NULL) {
-		 ob2->name = (char *)MALLOC(10);
-		 sprintf(ob2->name, "dummy%d", j);
-	      }
-	      else
-	         ob2->name = *(portnames + j);
-	      j++;
-	      if (j == numnodes) {
-	         ob = ob2;
-		 break;
-	      }
-	   }
- 	}
-     }
-  }
-  if (nodeorder != NULL) {
-     FREE(nodeorder);
-     FREE(portnames);
-     FREE(nodeorphan);
-     FREE(portorphan);
-  }
-  return(1);
+struct nlist *addproxies(struct hashlist *p, void *clientdata)
+{
+    struct nlist *ptr;
+    struct nlist *tc = (struct nlist *)clientdata;
+    struct objlist *ob, *lob, *tob, *obn, *firstpin;
+    int i, numnodes, maxnode;
+
+    ptr = (struct nlist *)(p->ptr);
+    if (ptr->file != tc->file) return NULL;	/* Keep going */
+
+    // Count the largest node number used in the cell
+    maxnode = -1;
+    for (ob = ptr->cell; ob; ob = ob->next)
+       if (ob->type >= FIRSTPIN || ob->type == NODE)
+	  if (ob->node >= maxnode)
+	     maxnode = ob->node + 1;
+    numnodes = maxnode;
+
+    lob = NULL;
+    ob = ptr->cell;
+    while (ob != NULL) {
+       while (ob && ob->type != FIRSTPIN) {
+	  lob = ob;
+	  ob = ob->next;
+       }
+       if (ob && ob->model.class != NULL) {
+	  if (!(*matchfunc)(ob->model.class, tc->name)) {
+	     lob = ob;
+	     ob = ob->next;
+	     continue;
+	  }
+       }
+       if (ob == NULL) break;
+
+       tob = tc->cell;
+       i = FIRSTPIN;
+       firstpin = ob;
+       while (tob && (tob->type == PORT || tob->type == UNKNOWN)) {
+	  if (tob->type == UNKNOWN) {
+	     obn = (struct objlist *)CALLOC(1, sizeof(struct objlist));
+	     obn->name = (char *)MALLOC(strlen(firstpin->instance.name)
+			+ strlen(tob->name) + 2);
+	     sprintf(obn->name, "%s/%s", firstpin->instance.name, tob->name);
+	     obn->instance.name = strsave(firstpin->instance.name);
+	     obn->model.class = strsave(tc->name);
+	     obn->type = i++;
+	     obn->node = numnodes++;
+	     obn->next = ob;	// Splice into object list
+	     lob->next = obn;
+	     lob = obn;
+
+	     // Hash the new pin record for "LookupObject()"
+	     HashPtrInstall(obn->name, obn, &(ptr->objdict));
+
+	     if (tob == tc->cell) {
+		// Rehash the instance in instdict
+		HashPtrInstall(firstpin->instance.name, firstpin, &(ptr->instdict));
+	     }
+	  }
+	  else if (ob == NULL) {
+	     // This should not happen. . .
+	     Fprintf(stdout, "Error:  Premature end of pin list on instance %s.\n",
+			firstpin->instance.name);
+	     break;
+	  }
+	  else {
+	     lob = ob;
+	     ob->type = i++;
+	     ob = ob->next;
+	  }
+	  tob = tob->next;
+       }
+    }
+
+    /* Insert a record for each new node added to the cell */
+    for (i = maxnode; i < numnodes; i++) {
+       obn = (struct objlist *)CALLOC(1, sizeof(struct objlist));
+       obn->node = i;
+       obn->type = NODE;
+       obn->model.class = NULL;
+       obn->instance.name = NULL;
+       obn->name = (char *)MALLOC(12);
+       sprintf(obn->name, "dummy_%d", i);
+       obn->next = NULL;
+       lob->next = obn;
+       lob = obn;
+       HashPtrInstall(obn->name, obn, &(ptr->objdict));
+    }
+
+    // We messed with the node name list, so have to re-cache them
+    if (maxnode < numnodes) CacheNodeNames(ptr);
+
+    return NULL;	/* Keep the search going */
 }
 
 /*------------------------------------------------------*/
@@ -4029,28 +6388,43 @@ int reorderpins(struct hashlist *p, int file)
 /* to net automorphisms, then they are added to the	*/
 /* list of permuted pins.				*/
 /*							*/
-/* Return 1 on success, 0 on failure			*/
+/* NOTE:  This routine must not be called on any	*/
+/* circuit pair that has not been matched.  If a 	*/
+/* circuit pair has been matched with automorphisms,	*/
+/* then some pins may be matched arbitrarily.		*/
+/*							*/
+/* If "dolist" is 1, append the list representing the	*/
+/* output (if any) to variable tcl_out, if it exists.	*/
+/*							*/
+/* Return codes:					*/
+/* 2: Neither cell had pins, so matching is unnecessary	*/
+/* 1: Exact match					*/
+/* 0: Inexact match resolved by proxy pin insertion	*/
 /*------------------------------------------------------*/
 
-int MatchPins()
+int MatchPins(struct nlist *tc1, struct nlist *tc2, int dolist)
 {
-   char *cover;
-   struct nlist *tc1, *tc2;
-   struct objlist *ob1, *ob2, *obn, *obp, *ob1s, *ob2s;
+   char *cover, *ctemp;
+   char *bangptr1, *bangptr2;
+   struct objlist *ob1, *ob2, *obn, *obp, *ob1s, *ob2s, *obt;
    struct NodeClass *NC;
    struct Node *N1, *N2;
-   int i, j, k, m, swapped, numnodes;
+   int i, j, k, m, a, b, swapped, numnodes, numorig;
    int result = 1, haspins = 0;
+   int hasproxy1 = 0, hasproxy2 = 0;
+   int needclean1 = 0, needclean2 = 0;
    char ostr[89];
+#ifdef TCL_NETGEN
+   Tcl_Obj *mlist, *plist1, *plist2;
+#endif
 
-   // FIXME --- tc1 = Circuit1, tc2 = Circuit2
-   tc1 = LookupCellFile(Circuit1->name, Circuit1->file);
-   tc2 = LookupCellFile(Circuit2->name, Circuit2->file);
+   if (tc1 == NULL) tc1 = Circuit1;
+   if (tc2 == NULL) tc2 = Circuit2;
 
    for (ob2 = tc2->cell; ob2 != NULL; ob2 = ob2->next) {
       if (ob2->type != PORT) break;
       else haspins = 1;
-      ob2->model = (char *)(-1);
+      ob2->model.port = -1;
    }
    numnodes = 0;
    for (ob1 = tc1->cell; ob1 != NULL; ob1 = ob1->next) {
@@ -4062,10 +6436,21 @@ int MatchPins()
    if (haspins == 0) {
       // Neither cell has any ports, so this is probably a top-level
       // cell and there is nothing to do.
-      return 1;
+      return 2;
    }
 
    cover = (char *)CALLOC(numnodes, sizeof(char));
+   numorig = numnodes;
+
+#ifdef TCL_NETGEN
+   if (dolist) {
+      mlist = Tcl_NewListObj(0, NULL);
+      plist1 = Tcl_NewListObj(0, NULL);
+      plist2 = Tcl_NewListObj(0, NULL);
+      Tcl_ListObjAppendElement(netgeninterp, mlist, plist1);
+      Tcl_ListObjAppendElement(netgeninterp, mlist, plist2);
+   }
+#endif
 
    if (Debug == 0) {
        /* Format side-by-side comparison of pins */
@@ -4085,68 +6470,128 @@ int MatchPins()
    }
 
    for (NC = NodeClasses; NC != NULL; NC = NC->next) {
+      a = 0;
       for (N1 = NC->nodes; N1 != NULL; N1 = N1->next) {
          if (N1->graph == Circuit1->file) {
 	    obn = N1->object;
-	    if (IsPort(obn->type)) {
+	    if (IsPort(obn)) {
 	       i = 0;
 	       for (ob1 = tc1->cell; ob1 != NULL; ob1 = ob1->next, i++) {
-	          if ((IsPort(ob1->type)) && (*matchfunc)(ob1->name, obn->name)) {
+	          if ((IsPort(ob1))
+				&& (*matchfunc)(ob1->name, obn->name)) {
+		     b = 0;
                      for (N2 = NC->nodes; N2 != NULL; N2 = N2->next) {
-	                if (N2->graph != Circuit1->file)
-		           break;
+	                if (N2->graph != Circuit1->file) {
+			   if (b == a) break;
+			   else b++;
+			}
 	             }
-	             if (N2 == NULL) return 0;
+	             if (N2 == NULL) {
+#ifdef TCL_NETGEN
+			if (dolist) {
+			   Tcl_SetVar2Ex(netgeninterp, "lvs_out", NULL,
+					Tcl_NewStringObj("pins", -1),
+					TCL_APPEND_VALUE | TCL_LIST_ELEMENT);
+			   Tcl_SetVar2Ex(netgeninterp, "lvs_out", NULL, mlist,
+					TCL_APPEND_VALUE | TCL_LIST_ELEMENT);
+			}
+#endif
+			return 1;
+		     }
+
 		     obp = N2->object;
 		     j = 0;
 	             for (ob2 = tc2->cell; ob2 != NULL; ob2 = ob2->next, j++) {
-	                if ((IsPort(ob2->type)) && (*matchfunc)(ob2->name, obp->name)) {
+	                if ((IsPort(ob2))
+					&& (*matchfunc)(ob2->name, obp->name)) {
 			   if (Debug == 0) {
 			      for (m = 0; m < 43; m++) *(ostr + m) = ' ';
 			      for (m = 44; m < 87; m++) *(ostr + m) = ' ';
-			      sprintf(ostr, "%s", obn->name);
-			      sprintf(ostr + 44, "%s", obp->name);
+			      snprintf(ostr, 43, "%s", obn->name);
+			      if ((*matchfunc)(obn->name, obp->name))
+			         snprintf(ostr + 44, 43, "%s", obp->name);
+			      else
+			         snprintf(ostr + 44, 43, "%s **Mismatch**", obp->name);
 			      for (m = 0; m < 88; m++)
 				 if (*(ostr + m) == '\0') *(ostr + m) = ' ';
 			      Fprintf(stdout, ostr);
 			   }
 			   else {
-			      Fprintf(stdout, "Cell %s port %d \"%s\""
+			      Fprintf(stdout, "Circuit %s port %d \"%s\""
 					" = cell %s port %d \"%s\"\n",
 					tc1->name, i, obn->name,
 					tc2->name, j, obp->name);
 			   }
-			   ob2->model = (char *)i;		/* save order */
+#ifdef TCL_NETGEN
+			   if (dolist) {
+		              Tcl_ListObjAppendElement(netgeninterp, plist1,
+					Tcl_NewStringObj(obn->name, -1));
+		              Tcl_ListObjAppendElement(netgeninterp, plist2,
+					Tcl_NewStringObj(obp->name, -1));
+			   }
+#endif
+			   ob2->model.port = i;		/* save order */
 			   *(cover + i) = (char)1;
 			   break;
 			}
 		     }
 		     if (ob2 == NULL) {
 			if (Debug == 0) {
-			   for (m = 0; m < 43; m++) *(ostr + m) = ' ';
-			   for (m = 44; m < 87; m++) *(ostr + m) = ' ';
-			   sprintf(ostr, "%s", obn->name);
-			   sprintf(ostr + 44, "(no matching pin)");
-			   for (m = 0; m < 88; m++)
+			   // If first cell has no pins but 2nd cell
+			   // does, then "no matching pin" entries will
+			   // be generated for all pins in the 2nd cell,
+			   // so don't print out the "no pins" entry.
+
+			   if (strcmp(obn->name, "(no pins)")) {
+			      for (m = 0; m < 43; m++) *(ostr + m) = ' ';
+			      for (m = 44; m < 87; m++) *(ostr + m) = ' ';
+			      snprintf(ostr, 32, "%s", obn->name);
+			      snprintf(ostr + 44, 43, "(no matching pin)");
+			      for (m = 0; m < 88; m++)
 				 if (*(ostr + m) == '\0') *(ostr + m) = ' ';
-			   Fprintf(stdout, ostr);
+			      Fprintf(stdout, ostr);
+			   }
 			}
 			else {
 		           Fprintf(stderr, "No matching pin in cell %s for "
 					"cell %s pin %s\n",
 					tc2->name, tc1->name, obn->name);
 			}
+#ifdef TCL_NETGEN
+			if (dolist && strcmp(obn->name, "(no pins)")) {
+		           Tcl_ListObjAppendElement(netgeninterp, plist1,
+				Tcl_NewStringObj(obn->name, -1));
+		           Tcl_ListObjAppendElement(netgeninterp, plist2,
+				Tcl_NewStringObj("(no matching pin)", -1));
+			}
+#endif
 			result = 0;
+
+			/* Make a pass through circuit 1 to find out if	*/
+			/* the pin really is connected to anything, or	*/
+			/* has been left orphaned after flattening.  If	*/
+			/* disconnected, set its node number to -1.	*/
+
+			for (obt = ob1->next; obt; obt = obt->next) {
+			   if (obt->type >= FIRSTPIN)
+			      if (obt->node == ob1->node)
+				 break;
+			}
+			if (obt == NULL) {
+			   ob1->node = -1;	// Will run this through cleanuppins
+			   needclean1 = 1;
+			}
 		     }
 		     break;
 		  }
 	       }
+
 	       if (ob1 == NULL) {
 		  if (Debug == 0) {
 		     for (m = 0; m < 43; m++) *(ostr + m) = ' ';
 		     for (m = 44; m < 87; m++) *(ostr + m) = ' ';
-		     sprintf(ostr, "%s", obn->name);
-		     sprintf(ostr + 44, "(no matching pin)");
+		     snprintf(ostr, 43, "%s", obn->name);
+		     snprintf(ostr + 44, 43, "(no matching pin)");
 		     for (m = 0; m < 88; m++)
 			if (*(ostr + m) == '\0') *(ostr + m) = ' ';
 		     Fprintf(stdout, ostr);
@@ -4155,173 +6600,352 @@ int MatchPins()
 		     Fprintf(stderr, "No netlist match for cell %s pin %s\n",
 				tc1->name, obn->name);
 		  }
+#ifdef TCL_NETGEN
+		  if (dolist) {
+		     Tcl_ListObjAppendElement(netgeninterp, plist1,
+				Tcl_NewStringObj(obn->name, -1));
+		     Tcl_ListObjAppendElement(netgeninterp, plist2,
+				Tcl_NewStringObj("(no matching pin)", -1));
+		  }
+#endif
 		  result = 0;
 	       }
 	    }
+	    a++;
 	 }
       }
    }
 
-   if (result != 0) {
+   /* Do any unmatched pins have the same name? 		  */
+   /* (This should not happen if unconnected pins are eliminated) */
+   /* (Semi-hack: Allow "!" global flag) */
 
-      /* Shuffle disconnected pins to the end */
+   ob1 = tc1->cell;
+   bangptr1 = strrchr(ob1->name, '!');
+   if (bangptr1 && (*(bangptr1 + 1) == '\0'))
+      *bangptr1 = '\0';
+   else bangptr1 = NULL;
+  
+   for (i = 0; i < numorig; i++) {
+      if (*(cover + i) == (char)0) {
+	 j = 0;
+         for (ob2 = tc2->cell; ob2 != NULL; ob2 = ob2->next) {
+	    if (!IsPort(ob2)) break;
 
-      for (ob2 = tc2->cell; ob2 != NULL; ob2 = ob2->next) {
-         if (ob2->type != PORT) break;
-         if (ob2->model == (char *)(-1)) {
+	    bangptr2 = strrchr(ob2->name, '!');
+	    if (bangptr2 && (*(bangptr2 + 1) == '\0'))
+	       *bangptr2 = '\0';
+	    else bangptr2 = NULL;
 
-            if (ob2->node < 0) {
-	       ob2->model = (char *)numnodes++;
-            }
-	    else {
+	    if ((*matchfunc)(ob1->name, ob2->name)) {
+	       ob2->model.port = i;		/* save order */
+	       *(cover + i) = (char)1;
+
 	       if (Debug == 0) {
 		  for (m = 0; m < 43; m++) *(ostr + m) = ' ';
 		  for (m = 44; m < 87; m++) *(ostr + m) = ' ';
-		  sprintf(ostr, "(no matching pin)");
-		  sprintf(ostr + 44, "%s", ob2->name);
+		  snprintf(ostr, 43, "%s", ob1->name);
+		  snprintf(ostr + 44, 43, "%s", ob2->name);
 		  for (m = 0; m < 88; m++)
 		     if (*(ostr + m) == '\0') *(ostr + m) = ' ';
 		  Fprintf(stdout, ostr);
 	       }
 	       else {
-	          Fprintf(stderr, "No netlist match for cell %s pin %s\n",
-				tc2->name, ob2->name);
+		  Fprintf(stdout, "Circuit %s port %d \"%s\""
+				" = cell %s port %d \"%s\"\n",
+				tc1->name, i, ob1->name,
+				tc2->name, j, ob2->name);
 	       }
-	       result = 0;
-            }
-         }
-      }
-
-      /* If cell 2 has fewer nodes than cell 1, then add dummy (unconnected)	*/
-      /* pins to cell 2.  If these correspond to numbers missing in the	match	*/
-      /* sequence, then fill in the missing numbers.  Otherwise, add the	*/
-      /* extra nodes to the end.						*/
-
-      j = i = 0;
-      for (ob2 = tc2->cell; ob2 != NULL; ob2 = ob2->next) {
-	 j++;
-	 if (ob2->next->type != PORT) break;
-      }
-
-      while (j < numnodes) {
-	 while (*(cover + i) != (char)0) i++;
-	 if (i >= numnodes) break;
-
-	 /* If the equivalent node in tc1 is not disconnected	*/
-	 /* (node != -1) then we have a match error, and should	*/
-	 /* stop.						*/
-
-	 ob1 = tc1->cell;
-	 for (k = i; k > 0 && ob1 != NULL; k--)
-	    ob1 = ob1->next;
-
-	 if (ob1 == NULL || ob1->type != PORT || ob1->node >= 0) {
-	    if (ob1 != NULL && IsPort(ob1->type)) {
-
-	       if (Debug == 0) {
-		  for (m = 0; m < 43; m++) *(ostr + m) = ' ';
-		  for (m = 44; m < 87; m++) *(ostr + m) = ' ';
-		  sprintf(ostr, "%s", ob1->name);
-		  sprintf(ostr + 44, "(no matching pin)");
-		  for (m = 0; m < 88; m++)
-		     if (*(ostr + m) == '\0') *(ostr + m) = ' ';
-		  Fprintf(stdout, ostr);
+#ifdef TCL_NETGEN
+	       if (dolist) {
+		  Tcl_ListObjAppendElement(netgeninterp, plist1,
+				Tcl_NewStringObj(ob1->name, -1));
+		  Tcl_ListObjAppendElement(netgeninterp, plist2,
+				Tcl_NewStringObj(ob2->name, -1));
 	       }
-	       else {
-	          Fprintf(stderr, "No netlist match for cell %s pin %s\n",
-				tc1->name, ob1->name);
-	       }
+#endif
 	    }
-	    else {
-	       if (Debug == 0) {
-		  for (m = 0; m < 43; m++) *(ostr + m) = ' ';
-		  for (m = 44; m < 87; m++) *(ostr + m) = ' ';
-		  sprintf(ostr, "%d", i);
-		  sprintf(ostr + 44, "(no matching pin)");
-		  for (m = 0; m < 88; m++)
-		     if (*(ostr + m) == '\0') *(ostr + m) = ' ';
-		  Fprintf(stdout, ostr);
-	       }
-	       else {
-	          Fprintf(stderr, "No netlist match for cell %s pin number %d\n",
-				tc1->name, i);
-	       }
-	    }
-	    result = 0;
+	    if (bangptr2) *bangptr2 = '!';
 	    j++;
-	    i++;
-	    continue;	// Make sure we print all errors
 	 }
-
-	 obn = (struct objlist *)CALLOC(1, sizeof(struct objlist));
-	 obn->name = (char *)MALLOC(10);
-	 sprintf(obn->name, "dummy%d", i);
-	 obn->type = PORT;
-	 obn->model = (char *)i;
-	 obn->instance = NULL;
-	 obn->node = -1;
-	 obn->next = ob2->next;
-	 ob2->next = obn;
-	 ob2 = obn;
-
-	 j++;
-	 i++;
       }
-      FREE(cover);
+      ob1 = ob1->next;
    }
+   if (bangptr1) *bangptr1 = '!';
+
+   /* Find the end of the pin list in tc1, for adding proxy pins */
+
+   for (ob1 = tc1->cell; ob1 != NULL; ob1 = ob1->next) {
+      if (ob1 && ob1->next && ob1->next->type != PORT)
+	 break;
+   }
+   if (ob1 == NULL) ob1 = tc1->cell;	/* No ports */
+
+   /* Assign non-matching pins in tc2 with real node	*/
+   /* connections in the cell to the end.  Create pins	*/
+   /* in tc1 to match.					*/
+
+   for (ob2 = tc2->cell; ob2 != NULL; ob2 = ob2->next) {
+      if (ob2->type != PORT) break;
+      if (ob2->model.port == -1) {
+
+	 if (Debug == 0) {
+	    // See above for reverse case
+	    if (strcmp(ob2->name, "(no pins)")) {
+	       for (m = 0; m < 43; m++) *(ostr + m) = ' ';
+	       for (m = 44; m < 87; m++) *(ostr + m) = ' ';
+	       snprintf(ostr, 43, "(no matching pin)");
+	       snprintf(ostr + 44, 43, "%s", ob2->name);
+	       for (m = 0; m < 88; m++)
+		  if (*(ostr + m) == '\0') *(ostr + m) = ' ';
+	       Fprintf(stdout, ostr);
+	    }
+	 }
+	 else {
+	    Fprintf(stderr, "No netlist match for cell %s pin %s\n",
+				tc2->name, ob2->name);
+	 }
+#ifdef TCL_NETGEN
+         if (dolist) {
+	    Tcl_ListObjAppendElement(netgeninterp, plist1,
+			Tcl_NewStringObj("(no matching pin)", -1));
+	    Tcl_ListObjAppendElement(netgeninterp, plist2,
+			Tcl_NewStringObj(ob2->name, -1));
+         }
+#endif
+	 result = 0;
+
+	 /* Before making a proxy pin, check to see if	*/
+	 /* flattening instances has left a port with a	*/
+	 /* net number that doesn't connect to anything	*/
+
+	 for (obt = ob2->next; obt; obt = obt->next) {
+	    if (obt->type >= FIRSTPIN)
+	       if (obt->node == ob2->node)
+		  break;
+	 }
+	 if (obt == NULL) {
+	    ob2->node = -1;	// Will run this through cleanuppins
+	    needclean2 = 1;
+	    continue;
+	 }
+	 ob2->model.port = numnodes++;	// Assign a port order
+
+	 /* Add a proxy pin to tc1 */
+	 /* Technically, this should have a matching net number. */
+	 /* But nothing connects to it, so it is only needed to  */
+	 /* make sure the "pin magic" numbers are correctly	 */
+	 /* assigned to both cells.				 */
+
+         obn = (struct objlist *)CALLOC(1, sizeof(struct objlist));
+         obn->name = (char *)MALLOC(6 + strlen(ob2->name));
+         sprintf(obn->name, "proxy%s", ob2->name);
+         obn->type = UNKNOWN;
+         obn->model.port = -1;
+         obn->instance.name = NULL;
+         obn->node = -1;
+	 if (ob1 == tc1->cell) {
+	    obn->next = ob1;
+	    tc1->cell = obn;
+	 }
+	 else {
+            obn->next = ob1->next;
+            ob1->next = obn;
+	 }
+         ob1 = obn;
+	 hasproxy1 = 1;
+
+	 HashPtrInstall(obn->name, obn, &(tc1->objdict));
+      }
+   }
+
+   /* Find the end of the pin list in tc2, for adding proxy pins */
+
+   for (ob2 = tc2->cell; ob2 != NULL; ob2 = ob2->next) {
+      if (ob2 && ob2->next && ob2->next->type != PORT)
+	 break;
+   }
+   if (ob2 == NULL) ob2 = tc2->cell;	/* No ports */
+
+   /* If cell 2 has fewer nodes than cell 1, then add dummy (unconnected)  */
+   /* pins to cell 2.  If these correspond to numbers missing in the match */
+   /* sequence, then fill in the missing numbers.  Otherwise, add the	   */
+   /* extra nodes to the end.						   */
+
+   j = 0;
+   for (i = 0; i < numorig; i++) {
+      if (*(cover + i) == (char)1) continue;
+
+      /* If the equivalent node in tc1 is not disconnected	*/
+      /* (node != -1) then we should report a match error,	*/
+      /* although this does not necessarily imply an error in	*/
+      /* netlist connectivity.					*/ 
+
+      ob1 = tc1->cell;
+      for (k = i; k > 0 && ob1 != NULL; k--)
+	 ob1 = ob1->next;
+
+      if (ob1 == NULL || ob1->type != PORT || ob1->node >= 0) {
+	 /* Check if ob1->node might really be disconnected */
+	 for (obn = ob1->next; obn; obn = obn->next) {
+	    if (obn->node == ob1->node) break;
+	 }
+	 if (obn == NULL) ob1->node = -1;	/* Make disconnected */
+      }
+
+      if (ob1 == NULL || ob1->type != PORT || ob1->node >= 0) {
+
+	 /* Add a proxy pin to tc2 */
+         obn = (struct objlist *)CALLOC(1, sizeof(struct objlist));
+	 if (ob1 == NULL) {
+	    obn->name = (char *)MALLOC(15);
+            sprintf(obn->name, "proxy%d", rand() & 0x3ffffff);
+	 }
+	 else {
+            obn->name = (char *)MALLOC(6 + strlen(ob1->name));
+            sprintf(obn->name, "proxy%s", ob1->name);
+	 }
+         obn->type = UNKNOWN;
+         obn->model.port = (i - j);
+         obn->instance.name = NULL;
+         obn->node = -1;
+
+	 if (ob2 == tc2->cell) {
+	    obn->next = ob2;
+	    tc2->cell = obn;
+	 }
+	 else {
+            obn->next = ob2->next;
+            ob2->next = obn;
+	 }
+         ob2 = obn;
+	 hasproxy2 = 1;
+
+	 HashPtrInstall(obn->name, obn, &(tc2->objdict));
+      }
+
+      else if (ob1 != NULL && ob1->type == PORT) {
+	 /* Disconnected node was not meaningful, has no pin match in	*/
+	 /* the compared circuit, and so should be discarded.		*/
+	 needclean1 = 1;
+
+	 /* Adjust numbering around removed node */
+	 for (ob2s = tc2->cell; ob2s != NULL && ob2s->type == PORT; ob2s = ob2s->next) {
+	    if (ob2s->model.port > (i - j)) ob2s->model.port--;
+	 }
+	 j++;
+      }
+   }
+   FREE(cover);
 
    if (Debug == 0) {
       for (i = 0; i < 87; i++) *(ostr + i) = '-';
       Fprintf(stdout, ostr);
    }
 
-   if (result != 0) {
-
-      /* Reorder pins in Circuit2 instances to match Circuit1 */
-
-      RecurseCellFileHashTable(reorderpins, Circuit2->file);
-
-      /* Reorder pins in Circuit2 cell to match Circuit1 */
-
-      do {
-         swapped = 0;
-         obn = NULL;
-         for (ob2 = tc2->cell; ob2 != NULL; ob2 = ob2->next) {
-	    if (ob2->next != NULL && IsPort(ob2->type) && IsPort(ob2->next->type)) {
-	       if (ob2->model > ob2->next->model) {
-	          swapped++;
-	          if (obn != NULL) {
-		     obn->next = ob2->next;
-	             ob2->next = ob2->next->next;
-	             obn->next->next = ob2;
-	          }
-	          else {
-		     tc2->cell = ob2->next;
-	             ob2->next = ob2->next->next;
-	             tc2->cell->next = ob2;
-	          }
-		  break;
-	       }
-	    }
-	    obn = ob2;
-         }
-      } while (swapped > 0);
+   /* Run cleanuppins on circuit 1 */
+   if (needclean1) {
+      CleanupPins(tc1->name, tc1->file);
    }
+
+   /* Add proxy pins to all instances of Circuit1 */
+
+   if (hasproxy1) {
+      RecurseCellHashTable2(addproxies, (void *)(tc1));
+      CacheNodeNames(tc1);
+   }
+
+   /* Clean up "UNKNOWN" records from Circuit1 */
+
+   for (obn = tc1->cell; obn; obn = obn->next) {
+      if (obn->type == UNKNOWN) obn->type = PORT;
+      else if (obn->type != PORT) break;
+   }
+
+   /* Run cleanuppins on circuit 2 */
+   if (needclean2) {
+      CleanupPins(tc2->name, tc2->file);
+   }
+
+   /* Add proxy pins to all instances of Circuit2 */
+
+   if (hasproxy2) {
+      RecurseCellHashTable2(addproxies, (void *)(tc2));
+      CacheNodeNames(tc2);
+   }
+
+   /* Clean up "UNKNOWN" records from Circuit2 */
+
+   for (obn = tc2->cell; obn; obn = obn->next) {
+      if (obn->type == UNKNOWN) obn->type = PORT;
+      else if (obn->type != PORT) break;
+   }
+
+   /* Check for ports that did not get ordered */
+   for (obn = tc2->cell; obn && (obn->type == PORT); obn = obn->next) {
+      if (obn->model.port == -1) {
+	 if (obn->node == -1) {
+	    // This only happens when pins have become separated from any net.
+	 }
+	 else {
+	    // This should not happen. . .
+	    Fprintf(stderr, "Error:  Connected pin %s (node %d) did not get "
+			"ordered!\n", obn->name, obn->node);
+	 }
+      }
+   }
+
+   /* Reorder pins in Circuit2 instances to match Circuit1 */
+
+   RecurseCellFileHashTable(reorderpins, Circuit2->file);
+
+   /* Reorder pins in Circuit2 cell to match Circuit1		*/
+   /* Unlike the instance records, the structures are swapped,	*/
+   /* so the object hash pointers don't become invalid.		*/
+
+   do {
+      swapped = 0;
+      obn = NULL;
+      for (ob2 = tc2->cell; ob2 != NULL; ob2 = ob2->next) {
+	 if (ob2->next != NULL && IsPort(ob2) && IsPort(ob2->next)) {
+	    if (ob2->model.port > ob2->next->model.port) {
+	       swapped++;
+	       if (obn != NULL) {
+		  obn->next = ob2->next;
+	          ob2->next = ob2->next->next;
+	          obn->next->next = ob2;
+	       }
+	       else {
+		  tc2->cell = ob2->next;
+	          ob2->next = ob2->next->next;
+	          tc2->cell->next = ob2;
+	       }
+	       break;
+	    }
+	 }
+	 obn = ob2;
+      }
+   } while (swapped > 0);
 
    /* Whether or not pins matched, reset ob2's pin indexes to 0 */
 
    for (ob2 = tc2->cell; ob2 != NULL; ob2 = ob2->next) {
       if (ob2->type != PORT) break;
-      ob2->model = NULL;
+      ob2->model.port = -1;
    }
 
-   /* If pins cannot be made equivalent, mark the cells as non-matching */
-   /* so that the hierarchical LVS will flatten them.			*/
+#ifdef TCL_NETGEN
+   /* Handle list output */
 
-   if (result == 0) {
-      tc1->flags &= ~CELL_MATCHED;
-      tc2->flags &= ~CELL_MATCHED;
+   if (dolist) {
+      Tcl_SetVar2Ex(netgeninterp, "lvs_out", NULL,
+			Tcl_NewStringObj("pins", -1),
+			TCL_APPEND_VALUE | TCL_LIST_ELEMENT);
+      Tcl_SetVar2Ex(netgeninterp, "lvs_out", NULL, mlist,
+			TCL_APPEND_VALUE | TCL_LIST_ELEMENT);
    }
+#endif
+
    return result;
 }
 
@@ -4435,10 +7059,10 @@ int EquivalentElement(char *name, struct nlist *circuit, struct objlist **retobj
 void FlattenCurrent()
 {
    if (Circuit1 != NULL && Circuit2 != NULL) {
-      Printf("Flattening subcell %s\n", Circuit1->name);
+      Fprintf(stdout, "Flattening subcell %s\n", Circuit1->name);
       FlattenInstancesOf(Circuit1->name, Circuit1->file);
 
-      Printf("Flattening subcell %s\n", Circuit2->name);
+      Fprintf(stdout, "Flattening subcell %s\n", Circuit2->name);
       FlattenInstancesOf(Circuit2->name, Circuit2->file);
    }
 }
@@ -4494,27 +7118,27 @@ int Compare(char *cell1, char *cell2)
 {
   int automorphisms;
 
-  CreateTwoLists(cell1, -1, cell2, -1);
+  CreateTwoLists(cell1, -1, cell2, -1, 0);
   Permute();
-
-  /* Permutations should go here. . . */
-
-  while (!Iterate()) ; 
-
+  while (!Iterate()); 
   ExhaustiveSubdivision = 1;
   while (!Iterate());
 
   automorphisms = VerifyMatching();
   if (automorphisms == -1) {
     MatchFail(cell1, cell2);
-    Printf("Circuits do not match.\n");
+    Fprintf(stderr, "Circuits do not match.\n");
     PrintIllegalClasses();
     return(0);
   }
   if (automorphisms == 0) Fprintf(stdout, "Circuits match correctly.\n");
-  if (PropertyErrorDetected) {
+  if (PropertyErrorDetected == 1) {
      Fprintf(stdout, "There were property errors.\n");
-     PrintPropertyResults();
+     PrintPropertyResults(0);
+  }
+  else if (PropertyErrorDetected == -1) {
+     Fprintf(stdout, "There were missing properties.\n");
+     PrintPropertyResults(0);
   }
   if (automorphisms == 0) return(1);
 
@@ -4554,7 +7178,7 @@ void NETCOMP(void)
     case 'c':
       promptstring("Enter cell 1: ",name);
       promptstring("Enter cell 2: ",name2);
-      CreateTwoLists(name, -1, name2, -1);
+      CreateTwoLists(name, -1, name2, -1, 0);
 #ifdef DEBUG_ALLOC
       PrintCoreStats();
 #endif
@@ -4582,7 +7206,7 @@ void NETCOMP(void)
 	automorphisms = VerifyMatching();
 	if (automorphisms == -1) {
 	  PrintIllegalClasses();
-	  Fprintf(stdout, "Graphs do not match.\n");
+	  Fprintf(stdout, "Netlists do not match.\n");
 	}
 	else {
 	  if (automorphisms) 
@@ -4598,12 +7222,12 @@ void NETCOMP(void)
 	int automorphisms;
 	while (!Iterate()) ; 
 	automorphisms = VerifyMatching();
-	if (automorphisms == -1) Fprintf(stdout, "Graphs do not match.\n");
+	if (automorphisms == -1) Fprintf(stdout, "Netlists do not match.\n");
 	else {
-	  Printf("Graphs match with %d automorphisms.\n", automorphisms);
+	  Printf("Netlists match with %d automorphisms.\n", automorphisms);
 	  while ((automorphisms = ResolveAutomorphisms()) > 0)
 	    Printf("  automorphisms = %d.\n", automorphisms);
-	  if (automorphisms == -1) Fprintf(stdout, "Graphs do not match.\n");
+	  if (automorphisms == -1) Fprintf(stdout, "Netlists do not match.\n");
 	  else Printf("Circuits match correctly.\n");
 	}
       }
@@ -4611,23 +7235,23 @@ void NETCOMP(void)
     case 'a':
       PrintAutomorphisms();
       break;
-    case 'e':
-      /* equivalence two elements */
-      Printf("Equivalence two elements.\n");
-      promptstring("Enter element in circuit 1: ",name);
-      promptstring("Enter element in circuit 2: ",name2);
-      if (EquivalenceElements(name, name2)) 
-	Printf("Elements %s and %s are equivalent.\n", name, name2);
-      else Printf("Unable to equivalence elements %s and %s.\n",name, name2);
+    case 'd':
+      /* equivalence two devices */
+      Printf("Force matching of two devices.\n");
+      promptstring("Enter device in circuit 1: ",name);
+      promptstring("Enter device in circuit 2: ",name2);
+      if (EquivalenceElements(name, Circuit1->file, name2, Circuit2->file)) 
+	Printf("Devices %s and %s are now equivalent.\n", name, name2);
+      else Printf("Unable to match devices %s and %s.\n",name, name2);
       break;
     case 'n':
       /* equivalence two nodes */
-      Printf("Equivalence two nodes.\n");
-      promptstring("Enter node in circuit 1: ",name);
-      promptstring("Enter node in circuit 2: ",name2);
-      if (EquivalenceNodes(name, -1, name2, -1))
-	Printf("Nodes %s and %s are equivalent.\n", name, name2);
-      else Printf("Unable to equivalence nodes %s and %s.\n",name, name2);
+      Printf("Force matching of two nets.\n");
+      promptstring("Enter net in circuit 1: ",name);
+      promptstring("Enter net in circuit 2: ",name2);
+      if (EquivalenceNodes(name, Circuit1->file, name2, Circuit2->file))
+	Printf("Nets %s and %s are now equivalent.\n", name, name2);
+      else Printf("Unable to match nets %s and %s.\n",name, name2);
       break;
     case 'p':
       {
@@ -4637,20 +7261,21 @@ void NETCOMP(void)
 	promptstring("Enter cellname: ",model);
 	promptstring("Enter pin 1: ",name);
 	promptstring("Enter pin 2: ",name2);
-	if (PermuteSetup(model, name, name2)) Printf("%s == %s\n",name, name2);
+	if (PermuteSetup(model, -1, name, name2))
+	   Printf("%s == %s\n",name, name2);
 	else Printf("Unable to permute pins %s, %s.\n",name, name2);
 	break;
       }
     case 't':
-      if (PermuteSetup("n", "drain", "source")) 
+      if (PermuteSetup("n", -1, "drain", "source")) 
 	Printf("n-channel: source == drain.\n");
-      if (PermuteSetup("p", "drain", "source")) 
+      if (PermuteSetup("p", -1, "drain", "source")) 
 	Printf("p-channel: source == drain.\n");
-      if (PermuteSetup("e", "bottom_a", "bottom_b")) 
+      if (PermuteSetup("e", -1, "bottom_a", "bottom_b")) 
 	Printf("poly cap: permuting poly1 regions.\n");
-      if (PermuteSetup("r", "end_a", "end_b")) 
+      if (PermuteSetup("r", -1, "end_a", "end_b")) 
 	Printf("resistor: permuting endpoints.\n");
-      if (PermuteSetup("c", "top", "bottom")) 
+      if (PermuteSetup("c", -1, "top", "bottom")) 
 	Printf("capacitor: permuting sides.\n");
       break;
     case 'x':
@@ -4670,8 +7295,8 @@ void NETCOMP(void)
       Printf("(R)un to completion (resolve automorphisms)\n");
       Printf("(v)erify results\n");
       Printf("print (a)utomorphisms\n");
-      Printf("equate two (e)lements\n");
-      Printf("equate two (n)odes\n");
+      Printf("equate two (d)evices\n");
+      Printf("equate two (n)ets\n");
       Printf("(p)ermute pins on elements\n");
       Printf("enable (t)ransistor permutations\n");
       Printf("toggle e(x)haustive subdivision\n");

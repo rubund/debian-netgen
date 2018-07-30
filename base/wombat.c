@@ -57,11 +57,11 @@ void Wombat(char *name, char *filename)
   while (ob != NULL) {
     if (ob->type == FIRSTPIN) {
       /* this is an instance */
-      FlushString ("%s %s ", ob->instance, ob->model);
+      FlushString ("%s %s ", ob->instance.name, ob->model.class);
 
       /* print out parameter list */
       ob2 = ob;
-      tp2 = LookupCell(ob->model);
+      tp2 = LookupCell(ob->model.class);
       do {
 	char *nm;
 #if 1

@@ -271,7 +271,7 @@ void initialize_netcmp_datastructures(Widget w, Widget textwidget,
 {
   X_START();
   Printf("Comparing cells '%s' and '%s'\n", get_cell(), get_other());
-  CreateTwoLists(get_cell(), get_other());
+  CreateTwoLists(get_cell(), get_other(), 0);
   Permute();
 #ifdef DEBUG_ALLOC
   PrintCoreStats();
@@ -356,7 +356,7 @@ void equivalence_netcmp_elements(Widget w, Widget textwidget, caddr_t call_data)
 {
   X_START();
   Printf("Equivalence elements '%s' and '%s'\n", get_data(), get_other());
-  if (EquivalenceElements(get_data(), get_other())) 
+  if (EquivalenceElements(get_data(), -1, get_other(), -1)) 
     Printf("Done.\n");
   else Printf("Unable to equivalence elements %s and %s\n",
 	      get_data(), get_other());
@@ -367,7 +367,7 @@ void equivalence_netcmp_nodes(Widget w, Widget textwidget, caddr_t call_data)
 {
   X_START();
   Printf("Equivalence nodes '%s' and '%s'\n", get_data(), get_other());
-  if (EquivalenceNodes(get_data(), get_other())) 
+  if (EquivalenceNodes(get_data(), -1, get_other(), -1)) 
     Printf("Done.\n");
   else Printf("Unable to equivalence nodes %s and %s\n",
 	      get_data(), get_other());
@@ -379,7 +379,7 @@ void permute_netcmp_pins(Widget w, Widget textwidget, caddr_t call_data)
   X_START();
   Printf("Cell '%s': permuting pins '%s' and '%s'\n", 
 	 get_cell(), get_data(), get_other());
-  if (PermuteSetup(get_cell(), get_data(), get_other())) 
+  if (PermuteSetup(get_cell(), -1, get_data(), get_other())) 
     Printf("%s == %s\n",get_data(), get_other());
   else Printf("Unable to permute pins %s, %s\n",get_data(), get_other());
   X_END();
@@ -388,15 +388,15 @@ void permute_netcmp_pins(Widget w, Widget textwidget, caddr_t call_data)
 void permute_netcmp_transistors(Widget w, Widget textwidget, caddr_t call_data)
 {
   X_START();
-  if (PermuteSetup("n", "drain", "source")) 
+  if (PermuteSetup("n", -1, "drain", "source")) 
     Printf("n-channel: source == drain\n");
-  if (PermuteSetup("p", "drain", "source")) 
+  if (PermuteSetup("p", -1, "drain", "source")) 
     Printf("p-channel: source == drain\n");
-  if (PermuteSetup("e", "bottom_a", "bottom_b")) 
+  if (PermuteSetup("e", -1, "bottom_a", "bottom_b")) 
     Printf("poly cap: permuting poly1 regions\n");
-  if (PermuteSetup("r", "end_a", "end_b")) 
+  if (PermuteSetup("r", -1, "end_a", "end_b")) 
     Printf("resistor: permuting endpoints\n");
-  if (PermuteSetup("c", "bot", "top")) 
+  if (PermuteSetup("c", -1, "bot", "top")) 
     Printf("capacitor: permuting sides\n");
   X_END();
 }
@@ -624,7 +624,7 @@ void print_nodes(Widget w, Widget textwidget, caddr_t call_data)
 {
   X_START();
   Printf("Nodes in cell: %s\n", get_cell());
-  PrintNodes(get_cell());
+  PrintNodes(get_cell(), -1);
   X_END();
 }
 
@@ -647,7 +647,7 @@ void print_ports(Widget w, Widget textwidget, caddr_t call_data)
 {
   X_START();
   Printf("Ports in cell: %s\n",  get_cell());
-  PrintPortsInCell(get_cell());
+  PrintPortsInCell(get_cell(), -1);
   X_END();
 }
 
@@ -655,7 +655,7 @@ void print_leaves(Widget w, Widget textwidget, caddr_t call_data)
 {
   X_START();
   Printf("Leaves in cell: %s\n",  get_cell());
-  PrintLeavesInCell(get_cell());
+  PrintLeavesInCell(get_cell(), -1);
   X_END();
 }
 
@@ -678,7 +678,7 @@ static menu_struct PrintMenu[] = {
 void list_cells(Widget w, Widget textwidget, caddr_t call_data)
 {
   X_START();
-  PrintCellHashTable(1, NULL);
+  PrintCellHashTable(1, -1);
   X_END();
 }
 

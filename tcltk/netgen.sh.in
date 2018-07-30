@@ -13,6 +13,8 @@
 # with the TkCon console.  Strip this argument from the argument list.
 
 TKCON=true
+BATCH=
+GUI=
 NETGEN_WISH=WISH_EXE
 export NETGEN_WISH
 
@@ -22,23 +24,28 @@ if [ ${TERM:=""} = "cygwin" ]; then
    export DISPLAY=${DISPLAY:=":0"}
 fi
 
-for i in $@ ; do
+# Preserve quotes in arguments (thanks, Stackoverflow!)
+arglist=''
+for i in "$@" ; do
    case $i in
       -noc*) TKCON=;;
+      -bat*) BATCH=true; TKCON=;;
+      -gui) GUI=true; TKCON=;;
+      *) arglist="$arglist${arglist:+ }\"${i//\"/\\\"}\"";;
    esac
-done
+done 
 
 if [ $TKCON ]; then
 
    exec TCL_DIR/tkcon.tcl \
 	-eval "source TCL_DIR/console.tcl" \
-	-slave "package require Tk; set argc $#; set argv [list $*]; \
+	-slave "package require Tk; set argc $#; set argv [list $arglist]; \
 	source TCL_DIR/netgen.tcl"
 
-#  exec TCL_DIR/tkcon.tcl -exec "" -eval \
-#	"set argc $#; set argv [list $*]; source TCL_DIR/netgen.tcl"
+# Run the Python LVS manager GUI
 
-else
+elif [ $GUI ]; then
+    exec PY_DIR/lvs_manager.py $@
 
 #
 # Run the stand-in for wish (netgenexec), which acts exactly like "wish"
@@ -47,6 +54,7 @@ else
 # capable of sourcing the startup script.
 #
 
-   exec TCL_DIR/netgenexec -- $@
+else
+   exec TCL_DIR/netgenexec -- "$@"
 
 fi

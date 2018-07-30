@@ -27,6 +27,10 @@ the Free Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. */
 #include <stdio.h>
 #include <stdarg.h>
 
+#ifdef TCL_NETGEN
+#include <tcl.h>
+#endif
+
 #include "netgen.h"
 #include "hash.h"
 #include "objlist.h"
@@ -50,7 +54,7 @@ void ntkCell(char *name)
 
   /* check to see that all children have been dumped */
   for (ob = tp->cell; ob != NULL; ob = ob->next) {
-    tp2 = LookupCell(ob->model);
+    tp2 = LookupCell(ob->model.class);
     if ((tp2 != NULL) && !(tp2->dumped)) 
       ntkCell(tp2->name);
   }
@@ -76,13 +80,13 @@ void ntkCell(char *name)
     if (ob->type == FIRSTPIN) {
       /* this is an instance */
       /* print out cell, but special case transistors */
-      if (match(ob->model, "n")) FlushString("N 2 ");
-      else if (match(ob->model, "p")) FlushString("P 2 ");
-      else FlushString ("h %s %s ", ob->model, ob->instance);
+      if (match(ob->model.class, "n")) FlushString("N 2 ");
+      else if (match(ob->model.class, "p")) FlushString("P 2 ");
+      else FlushString ("h %s %s ", ob->model.class, ob->instance.name);
 
       /* print out parameter list */
       ob2 = ob;
-      tp2 = LookupCell(ob->model);
+      tp2 = LookupCell(ob->model.class);
       do {
 	char	*nm;
 
@@ -183,17 +187,17 @@ char *ReadNtk (char *fname, int *fnum)
   int filenum;
   char *LastCellRead = NULL;
 
-  if ((filenum = OpenParseFile(fname)) < 0) {
+  if ((filenum = OpenParseFile(fname, *fnum)) < 0) {
     SetExtension(name, fname, NTK_EXTENSION);
-    if ((filenum = OpenParseFile(name)) < 0) {
-      Printf("No file: %s\n",name);
+    if ((filenum = OpenParseFile(name, *fnum)) < 0) {
+      Printf("Error in ntk file read: No file %s\n",name);
       *fnum = filenum;
       return NULL;
     }    
   }
 
   while (!EndParseFile()) {
-    SkipTok();
+    SkipTok(NULL);
     if (EndParseFile()) break;
     if (nexttok[0] == '|') SKIPTO(";");
     else if (match(nexttok, "c")) {
@@ -203,14 +207,14 @@ char *ReadNtk (char *fname, int *fnum)
 	EndCell();
 	CellDefInProgress = 0;
       }
-      SkipTok();
+      SkipTok(NULL);
       CellDef(nexttok, CurrentCell->file);
       LastCellRead = CurrentCell->name;
       CellDefInProgress = 1;
-      SkipTok();
+      SkipTok(NULL);
       while (!match(nexttok, ";")) {
 	Port(nexttok);
-	SkipTok();
+	SkipTok(NULL);
       }
     } 
     else if (match(nexttok, "s")) {
@@ -224,8 +228,8 @@ char *ReadNtk (char *fname, int *fnum)
 	if (LastCellRead == NULL)
 	  LastCellRead = CurrentCell->name;
       }
-      SkipTok();
-      SkipTok();		/* eat the 'size' of the node */
+      SkipTok(NULL);
+      SkipTok(NULL);		/* eat the 'size' of the node */
       /* after the 'size', all names are synonyms */
       while (!match(nexttok, ";")) {
 #if 1	
@@ -240,7 +244,7 @@ char *ReadNtk (char *fname, int *fnum)
 #endif
 	if (strlen(last)) join(last, nexttok);
 	strcpy(last, nexttok);
-	SkipTok();
+	SkipTok(NULL);
       }
     } 
     else if (match(nexttok, "h")) {
@@ -250,11 +254,11 @@ char *ReadNtk (char *fname, int *fnum)
 	if (LastCellRead == NULL)
 	  LastCellRead = CurrentCell->name;
       }
-      SkipTok();
+      SkipTok(NULL);
       strcpy(model, nexttok);
       strcpy(instancename, nexttok);
       strcat(instancename, INSTANCE_DELIMITER);
-      SkipTok();
+      SkipTok(NULL);
       strcat(instancename, nexttok);
       if (LookupCell(model) == NULL) {
 #ifdef DEFINE_UNDEFINED_CELLS
@@ -264,7 +268,7 @@ char *ReadNtk (char *fname, int *fnum)
 
 	previous_cell = CurrentCell->name;
 	CellDef(model, CurrentCell->file);
-	SkipTok(); 
+	SkipTok(NULL); 
 	args = 0;
 	while (!match(nexttok, ";")) {
 	  sprintf(name, "pin%d", args+1);
@@ -273,11 +277,11 @@ char *ReadNtk (char *fname, int *fnum)
 	  args++;
 	  /* check for overflow */
 	  if (args == (sizeof(ports) / sizeof(ports[0]))) {
-	    while (!match(nexttok, ";")) SkipTok();
+	    while (!match(nexttok, ";")) SkipTok(NULL);
 	    break; /* out of while loop */
 	  }
 	  /* if no overflow, get the next token */
-	  SkipTok();
+	  SkipTok(NULL);
 	}
 	EndCell();
 	/* now, reopen previous cell, instance the new cell,
@@ -299,9 +303,9 @@ char *ReadNtk (char *fname, int *fnum)
       else {
 	Instance(model, instancename);
 	ob = LookupCell(model)->cell;
-	while ((ob != NULL) && !IsPort(ob->type))
+	while ((ob != NULL) && !IsPort(ob))
 	  ob = ob->next;
-	SkipTok();
+	SkipTok(NULL);
 	while (!match(nexttok, ";")) {
 	  strcpy(name, instancename);
 	  strcat(name, SEPARATOR);
@@ -310,8 +314,8 @@ char *ReadNtk (char *fname, int *fnum)
 	  join(nexttok, name);
 	  do {
 	    ob = ob->next;
-	  } while ((ob != NULL) && !IsPort(ob->type)) ;
-	  SkipTok();
+	  } while ((ob != NULL) && !IsPort(ob)) ;
+	  SkipTok(NULL);
 	}
       }
     } 
@@ -322,12 +326,12 @@ char *ReadNtk (char *fname, int *fnum)
 	if (LastCellRead == NULL)
 	  LastCellRead = CurrentCell->name;
       }
-      SkipTok();
-      SkipTok();		/* skip the transistor size */
+      SkipTok(NULL);
+      SkipTok(NULL);		/* skip the transistor size */
       strcpy(name, nexttok);
-      SkipTok();
+      SkipTok(NULL);
       strcpy(model, nexttok);
-      SkipTok();
+      SkipTok(NULL);
       strcpy(instancename, nexttok);
       N(fname, NULL, name, model, instancename);
       SKIPTO(";");
@@ -339,12 +343,12 @@ char *ReadNtk (char *fname, int *fnum)
 	if (LastCellRead == NULL)
 	  LastCellRead = CurrentCell->name;
       }
-      SkipTok();
-      SkipTok();		/* skip the transistor size */
+      SkipTok(NULL);
+      SkipTok(NULL);		/* skip the transistor size */
       strcpy(name, nexttok);
-      SkipTok();
+      SkipTok(NULL);
       strcpy(model, nexttok);
-      SkipTok();
+      SkipTok(NULL);
       strcpy(instancename, nexttok);
       P(fname, NULL, name, model, instancename);
       SKIPTO(";");
