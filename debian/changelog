@@ -1,3 +1,9 @@
+netgen (1.5.105-1) UNRELEASED; urgency=medium
+
+  * New upstream release
+
+ -- Ruben Undheim <ruben.undheim@gmail.com>  Mon, 30 Jul 2018 11:24:13 +0200
+
 netgen (1.5.6-1) trusty; urgency=low
 
   * netgen lvs - layout vs schematic tool from opencircuitdesign.com
